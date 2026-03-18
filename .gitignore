@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+
+# Model（最重要🔥）
+models/
+
+# Dataset
+data/
+
+# Output
+outputs/
+
+# Cache
+.cache/
+
+# VSCode
+.vscode/
+
+# OS
+.DS_Store
+
+SugerSystem_AI_v1/
