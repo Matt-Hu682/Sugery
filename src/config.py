@@ -4,7 +4,7 @@ from pathlib import Path
 
 BASE_DIR = "/home/cvlabgodzilla/Desktop/Sugery_AI"
 #data/20240909_S01-S02
-VIDEO_DIR = os.path.join(BASE_DIR, "data", "20240805輪椅")
+VIDEO_DIR = os.path.join(BASE_DIR, "data", "20240806小孩")
 CSV_OUTPUT = os.path.join(BASE_DIR, "outputs", "surgery_report.csv")
 MODEL_PATH = "/home/cvlabgodzilla/Desktop/Sugery_AI/models/Qwen3-VL-8B-Instruct-FP8"
 
