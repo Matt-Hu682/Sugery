@@ -31,16 +31,20 @@ def video_start_time(video_path):
 
 def parse_response(response: str):
     """
-    解析模型回傳的文字 (針對 0/1 分類)
+    解析模型回傳的文字 (針對 0/1/2 分類)
     
-    預期輸入: "1", "0", "Status: 1", "There is a patient (1)"
-    輸出: "1" (有人), "0" (無人), "Unknown"
+    預期輸入: "1", "0", "2", "Status: 2"
+    輸出: "2" (步行進出), "1" (推床/輪椅進出), "0" (排除/無人)
     """
     if not response: return "0"
     
-    # 簡單粗暴的規則：只要出現 "1" 就是有人，出現 "0" 就是無人
-    # 優先檢查 1，因為我們寧可誤報有人，也不要漏掉
-    if "1" in response:
+    # 轉成字串並去除頭尾空白與換行，確保比對準確
+    response = str(response).strip()
+    
+    # 優先檢查 2 和 1，捕捉所有有病患進出的事件
+    if "2" in response:
+        return "2"
+    elif "1" in response:
         return "1"
     elif "0" in response:
         return "0"

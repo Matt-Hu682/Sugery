@@ -21,69 +21,54 @@ class PatientStatusAnalyzer:
         
         self.processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
         self.run_date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.door_buffer = []  # 存放 Door 時序連續畫面
+        self.door_max_frames = 15  # 因為一秒有 5 幀，所以設定為 15 幀 (即看過去 3 秒的連續動作)
         print("Model loaded successfully.")
     
     def get_prompt(self, task_type):
-        if task_type == "Door":  # 測試1 是否在進出中 (s01) 單純是看推床有沒有
+        if task_type == "Door":  # 測試1 是否在進出中 (s01) 多張時序判斷
             return """
-                    請觀察圖片。
+            這是一組手術室大門口連續畫面。請綜合這些連續畫面判斷「病人的進出」，並排除單純醫護人員(穿綠色手術服)走動或外面走廊路過。
 
-                    任務：
-                    判斷畫面中是否出現有躺著的人的移動式「推床」或有人坐著的「輪椅」。
-                    【最優先規則（必須先判斷）】
-                    - 若畫面中為「中央手術台」上的躺著的人（位於房間中央、有燈具），一律輸出 0（即使有人躺著）
-                    【輸出 1】
-                    只要畫面中出現以下任一項，即輸出 1：
-                    1. 推床：
-                        - 有輪子 + 側邊金屬欄杆
-                        - 通常出現在門口
-                        - 上面躺著一個人（可見身體輪廓）
-                    2. 輪椅：
-                    - 上面有一個人坐著
-                    
-                    【輸出 0】
-                    - 中央手術台上的躺著的人
-                    - 推床上沒有人
-                    - 輪椅上沒有人
-                    - 無法確認是否為移動式載具
-                    
+            【判定為 1：有病人進出】(只要連續畫面符合以下任一情境，即輸出 1)：
+                - 情境 A (推車進出)大門打開，且有護理人員推著「載有病人」的推床或輪椅，在連續畫面中顯示正在【跨越大門】（推進來或推出去）。
+                - 情境 B (步行進出)：大門是打開的，且有「病人（穿著藍色手術服的人）」在連續畫面中顯示正在【跨越大門】走路進來或出去。
 
-                    請只回答：
-                    0 或 1
-                    不要輸出其他文字。
-                    """
+            【判定為 0：不是病人進出】(只要符合任一項，立即輸出 0)：
+                - 【單純醫護進出】：雖有開門，但連續畫面中只有穿著綠色手術服的「醫護人員」走進來或出去，沒有載人推床。
+                - 【外面走廊經過】：門有打開，但外面走廊上的人事物只是路過，從連續畫面來看並沒有轉彎進入手術室。
+                - 【空載具進出】：進出大門的是「沒有載人」的純空推床、空金屬車架或空輪椅。
+                - 【與門口無關/靜止】：畫面中推床只是靜止停在門口或房內沒有進出動作，只要這組畫面沒有任何正在穿越大門的行為，一律為 0。
+                - 【大門關閉】：在這段連續畫面中，門幾乎都是關著的無人進出。
 
+                請根據上述規則判斷：
+                若從這組連續畫面能明顯看出有病人（躺推車、坐輪椅或步行）正在「穿越大門進或出」，請輸出: 1
+                若只是純醫護進出、走廊路過、空車進出、靜止不動或門關著，請輸出: 0
+
+                請只回答一個數字: 0 或 1。絕對不要輸出其他文字。
+            """
         elif task_type == "Surgery":  # 測試2 手術中(s02)
             return """
                 請觀察圖片中間的床。
 
-            請判斷：【是否有一群「站著的人」圍繞著一個「手術台」且手術台上有平躺的人?】
+            請判斷：【是否有一群「站著的人」圍繞著一個「手術台」?】
 
                 判斷規則：
-                    1.如果看到手術台床上躺著一個人，有綠色的棉被蓋住，輸出 1。
+                1. 如果看到手術台床上躺著一個人，有綠色的棉被蓋住，輸出 1。
                 2. 動作條件：必須有 2 位 或 2位以上的「站著的人」 緊密地圍在手術台旁邊，且他們的方向是朝向床上的 輸出1。
 
                 【排除條件 (輸出 0)】：
                     - 空床：床上沒人，無論旁邊有多少人，都輸出 0。
-                    -黑色mask: 如果畫面中手術台有「黑色色塊」部分區域遮罩，並沒看到人躺在床上的(需有粉紅色帽子)，請一律輸出 0。
+                    - 黑色mask: 如果畫面中手術台有「黑色色塊」部分區域遮罩，並沒看到人躺在床上的(需有粉紅色帽子)，請一律輸出 0。
                     - 單人/散開：只有 1 個人在床邊，或是多人但分散在房間各處，輸出 0。
 
                 若符合「圍繞」狀態，輸出: 1
-                    有人躺在手術台上，輸出: 1
-                    若不符合，輸出: 0
+                有人躺在手術台上，輸出: 1
+                若不符合，輸出: 0
 
-                    請只回答數字。
+                請只回答數字。
                 """
 
-        elif task_type == "Patient":  # 測試3 是否有病人(s02)
-            return """請觀察手術台的表面狀態。
-
-            請判斷：【手術台上現在是「空的」還是「有人」？】
-
-            - 如果看到床上躺著一個人 (Lying Person)，或者布單下有明顯的人體身形，輸出 1。
-            - 如果床是平的，或者只有放一些儀器/雜物，沒有躺人，輸出 0。
-
-            請只回答數字: 0 或 1。"""
             
         return ""
     
@@ -94,15 +79,34 @@ class PatientStatusAnalyzer:
 
         prompt = self.get_prompt(task_type)
 
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": pil_image},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
+        if task_type == "Door":
+            # 針對 Door 累積時間序圖片
+            self.door_buffer.append(pil_image)
+            if len(self.door_buffer) > self.door_max_frames:
+                self.door_buffer.pop(0)
+
+            content = []
+            for img in self.door_buffer:
+                content.append({"type": "image", "image": img})
+            content.append({"type": "text", "text": prompt})
+
+            messages = [
+                {
+                    "role": "user",
+                    "content": content,
+                }
+            ]
+        else:
+            # Surgery 等模式維持單解析單圖片
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": pil_image},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ]
         text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         image_inputs, video_inputs = process_vision_info(messages)
         inputs = self.processor(

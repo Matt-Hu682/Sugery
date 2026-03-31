@@ -4,11 +4,11 @@ from pathlib import Path
 
 BASE_DIR = "/home/cvlabgodzilla/Desktop/Sugery_AI"
 #data/20240909_S01-S02
-VIDEO_DIR = os.path.join(BASE_DIR, "data", "20240806小孩")
+VIDEO_DIR = os.path.join(BASE_DIR, "data", "20240103")
 CSV_OUTPUT = os.path.join(BASE_DIR, "outputs", "surgery_report.csv")
 MODEL_PATH = "/home/cvlabgodzilla/Desktop/Sugery_AI/models/Qwen3-VL-8B-Instruct-FP8"
 
-ROOM = "A8"
+ROOM = "A9"
 
 OR_SETTING = {
     "A8": ["S01", "S02"],
@@ -28,7 +28,7 @@ TARGET_CAMERAS = OR_SETTING[ROOM]
 # Door
 # Surgery
 # Patient
-CURRENT_TEST = "Door"
+CURRENT_TEST = "Surgery"
 if CURRENT_TEST == "Door":
     required_cam_type = "Door"  # 門口機
 elif CURRENT_TEST in ["Surgery", "Patient"]:
@@ -45,6 +45,14 @@ TARGET_CAMERAS = [
 
 # --- 參數設定 ---
 STRIDE_SEC = 0.2 # 每隔多少秒抽1幀分析
+
+# 裁切設定 (A9 需要裁切，A8 不需要) 
+# 格式: (x1, y1, x2, y2) 或 None
+CROP_SETTING = {
+    "A8": None,
+    "A9": (300, 200, 640, 480),  # 右下區域
+}
+CROP_REGION = CROP_SETTING.get(ROOM, None)
 
 # --- 顯示設定 ---
 SHOW_WINDOW = False
