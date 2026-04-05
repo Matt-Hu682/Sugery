@@ -1,0 +1,21 @@
+#!/bin/bash
+# 設定 MIG UUID 的步驟
+
+echo "🔍 查詢 MIG GPU UUID..."
+echo ""
+echo "執行以下命令查看可用的 MIG 設備："
+echo "  nvidia-smi -L"
+echo ""
+echo "示例輸出："
+echo "  GPU 0: NVIDIA A100 80GB PCIe"
+echo "    MIG 2g.35gb     Device  0: (UUID: MIG-ab8e204e-b0aa-56e2-b0cf-6438e473bf86)"
+echo "    MIG 2g.35gb     Device  1: (UUID: MIG-def3ca53-d2a7-51a8-890e-7bededa36e64)"
+echo ""
+echo "📝 複製 UUID，粘貼到 multi_gpu/config.py："
+echo "  GPU_IDS = ["
+echo "      \"MIG-ab8e204e-b0aa-56e2-b0cf-6438e473bf86\",  # Device 0"
+echo "      \"MIG-def3ca53-d2a7-51a8-890e-7bededa36e64\"   # Device 1"
+echo "  ]"
+echo ""
+echo "✅ 完成後，可以開始執行："
+echo "  /home/ai/Sugery_AI/run_with_tmux.sh"

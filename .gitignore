@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.pyc
+VLM-1/
 
 # Model（最重要🔥）
 models/
@@ -10,9 +11,11 @@ data/
 
 # Output
 outputs/
+result/
 
-# Cache
+# Cache & Temp
 .cache/
+temp/
 
 # VSCode
 .vscode/
@@ -20,6 +23,5 @@ outputs/
 # OS
 .DS_Store
 
+# Old Backup / Tests
 SugerSystem_AI_v1/
-
-result/

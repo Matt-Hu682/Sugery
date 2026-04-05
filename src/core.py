@@ -17,41 +17,37 @@ class PatientStatusAnalyzer:
         print(f"Loading model from {MODEL_PATH}...")
         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
             MODEL_PATH, device_map="auto", dtype=torch.float16, trust_remote_code=True
-        ).to("cuda")
+        )
         
         self.processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
         self.run_date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.door_buffer = []  # 存放 Door 時序連續畫面
         self.door_max_frames = 15  # 因為一秒有 5 幀，所以設定為 15 幀 (即看過去 3 秒的連續動作)
+        self.last_door_status = 0  # 追蹤上一次 Door 的結果，決定單圖/多圖模式
         print("Model loaded successfully.")
     
     def get_prompt(self, task_type):
-        if task_type == "Door":  # 測試1 是否在進出中 (s01) 多張時序判斷
+        if task_type == "Door":
             return """
-            這是一組手術室大門口連續畫面。請綜合這些連續畫面判斷「病人的進出」，並排除單純醫護人員(穿綠色手術服)走動或外面走廊路過。
+        請「專注觀察畫面大門區域」，忽略畫面中央的手術台與其他干擾。
+            請判斷：大門口是否正有「醫護人員推著推床」進出？
 
-            【判定為 1：有病人進出】(只要連續畫面符合以下任一情境，即輸出 1)：
-                - 情境 A (推車進出)大門打開，且有護理人員推著「載有病人」的推床或輪椅，在連續畫面中顯示正在【跨越大門】（推進來或推出去）。
-                - 情境 B (步行進出)：大門是打開的，且有「病人（穿著藍色手術服的人）」在連續畫面中顯示正在【跨越大門】走路進來或出去。
+        【輸出 1 的條件：推床跨越門檻】(必須滿足)
+        - 大門口出現一台「有金屬欄杆或輪子的大型推床/車架」，且有穿著綠色手術服的醫護人員，正在將它【推越/跨過】這道大門的門檻。(不管推床上是空的、還是蓋滿了綠色布單，只要有「推床」被推著跨越門檻，就是 1)。
 
-            【判定為 0：不是病人進出】(只要符合任一項，立即輸出 0)：
-                - 【單純醫護進出】：雖有開門，但連續畫面中只有穿著綠色手術服的「醫護人員」走進來或出去，沒有載人推床。
-                - 【外面走廊經過】：門有打開，但外面走廊上的人事物只是路過，從連續畫面來看並沒有轉彎進入手術室。
-                - 【空載具進出】：進出大門的是「沒有載人」的純空推床、空金屬車架或空輪椅。
-                - 【與門口無關/靜止】：畫面中推床只是靜止停在門口或房內沒有進出動作，只要這組畫面沒有任何正在穿越大門的行為，一律為 0。
-                - 【大門關閉】：在這段連續畫面中，門幾乎都是關著的無人進出。
+        【輸出 0 的條件：無推床進出】(只要符合任一項，立即輸出 0)
+        - 【徒手走路 (極重要)】：大門口有穿著綠衣服的醫護人員進出，但他們是「徒手走路」，雙手【沒有】推動任何大型推床。
+        - 【走廊路過】：外面走廊上的人事物只是背景路過，沒有轉彎跨越門檻進入。
+        - 【大門口淨空】：大門關閉，或是門雖然開著但完全沒人進出。
+        - 【動作不在門口】：畫面中央或左側發生的任何動作請直接忽略，只要大門沒有「推床被推過」，一律輸出 0。
 
-                請根據上述規則判斷：
-                若從這組連續畫面能明顯看出有病人（躺推車、坐輪椅或步行）正在「穿越大門進或出」，請輸出: 1
-                若只是純醫護進出、走廊路過、空車進出、靜止不動或門關著，請輸出: 0
-
-                請只回答一個數字: 0 或 1。絕對不要輸出其他文字。
-            """
+        請只回答數字: 0 或 1
+        """
         elif task_type == "Surgery":  # 測試2 手術中(s02)
             return """
                 請觀察圖片中間的床。
 
-            請判斷：【是否有一群「站著的人」圍繞著一個「手術台」?】
+                請判斷：【是否有一群「站著的人」圍繞著一個「手術台」?】
 
                 判斷規則：
                 1. 如果看到手術台床上躺著一個人，有綠色的棉被蓋住，輸出 1。
@@ -80,15 +76,23 @@ class PatientStatusAnalyzer:
         prompt = self.get_prompt(task_type)
 
         if task_type == "Door":
-            # 針對 Door 累積時間序圖片
+            # 永遠緩衝畫面（維持滑動窗口）
             self.door_buffer.append(pil_image)
             if len(self.door_buffer) > self.door_max_frames:
                 self.door_buffer.pop(0)
 
-            content = []
-            for img in self.door_buffer:
-                content.append({"type": "image", "image": img})
-            content.append({"type": "text", "text": prompt})
+            if self.last_door_status == 1:
+                # === Clip 模式：上一幀偵測到病人，用多圖時序確認 ===
+                content = []
+                for img in self.door_buffer:
+                    content.append({"type": "image", "image": img})
+                content.append({"type": "text", "text": prompt})
+            else:
+                # === 單圖模式：平時只送當前幀，省推論成本 ===
+                content = [
+                    {"type": "image", "image": pil_image},
+                    {"type": "text", "text": prompt},
+                ]
 
             messages = [
                 {
@@ -125,6 +129,65 @@ class PatientStatusAnalyzer:
 
         # 從模型輸出中解析結果
         output_text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0].split("assistant\n")[-1].strip()
+        result = parse_response(output_text)
+
+        # Door: 更新模式追蹤
+        if task_type == "Door":
+            self.last_door_status = result
+
+        return result, infer_time
+
+    @staticmethod
+    def detect_motion(gray_curr, gray_prev, diff_thresh=25, area_thresh=0.005):
+        """
+        Stage 0: 幀差法動態偵測
+        比較兩幀灰度圖的差異，判斷是否有顯著動態
+        Returns True if motion area ratio > area_thresh
+        """
+        diff = cv2.absdiff(gray_curr, gray_prev)
+        _, binary = cv2.threshold(diff, diff_thresh, 255, cv2.THRESH_BINARY)
+        ratio = cv2.countNonZero(binary) / binary.size
+        return ratio > area_thresh
+
+    def analyze_clip(self, clip_frames_bgr, task_type):
+        """
+        Stage 1: 對一組 clip 畫面做 VLM 推論
+        只在 Stage 0 偵測到動態時才呼叫，大幅減少 VLM 調用次數
+
+        Args:
+            clip_frames_bgr: list of BGR numpy arrays (rolling buffer)
+            task_type: 任務類型
+        """
+        prompt = self.get_prompt(task_type)
+
+        content = []
+        for frame_bgr in clip_frames_bgr:
+            image_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(image_rgb)
+            content.append({"type": "image", "image": pil_image})
+        content.append({"type": "text", "text": prompt})
+
+        messages = [{"role": "user", "content": content}]
+
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = self.processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt"
+        ).to(self.model.device)
+
+        start_time = time.time()
+        with torch.no_grad():
+            generated_ids = self.model.generate(**inputs, max_new_tokens=10)
+        infer_time = time.time() - start_time
+
+        output_text = self.processor.batch_decode(
+            generated_ids, skip_special_tokens=True
+        )[0].split("assistant\n")[-1].strip()
         result = parse_response(output_text)
         return result, infer_time
 

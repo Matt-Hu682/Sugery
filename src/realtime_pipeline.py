@@ -63,12 +63,12 @@ class RealtimePipeline:
         self._send_candidate_idx = None
 
         # === Door 模式參數 ===
-        self.door_ent_check_window = 300       # ENT 穩定期 300f = 1 分鐘
-        self.door_send_check_window = 300      # SEND 穩定期 300f = 1 分鐘
-        self.door_max_zero_tolerance = 50      # 每段連續 0 最多容許 50f
-        self.door_min_zero_hold = 300          # 連續 0 達 300f 才算活動結束
+        self.door_ent_check_window = 25        # ENT 穩定期 25f = 5 秒 (推床過門檻很快，5秒即可確認)
+        self.door_send_check_window = 25       # SEND 穩定期 25f = 5 秒
+        self.door_max_zero_tolerance = 10      # 每段連續 0 最多容許 10f (過門中途稍微沒抓到)
+        self.door_min_zero_hold = 300          # 連續 0 達 300f = 1 分鐘才算活動結束 (確保徹底離開)
         self.door_ent_to_send_min_gap = 4500   # ENT 開始到 SEND 最少間隔 4500f = 15分鐘
-        self.door_cooldown = 900               # SEND 結束後冷卻 900f
+        self.door_cooldown = 900               # SEND 結束後冷卻 900f = 3 分鐘
 
         # Door 狀態機變數
         self._door_state = 'IDLE'              # IDLE / ENT_CHECKING / ENT_ACTIVE 
@@ -220,7 +220,7 @@ class RealtimePipeline:
             voted = 1 if (sum(window) / len(window)) >= 0.5 else 0
             self.voted_statuses.append(voted)
 
-            # 新產生一個 voted_status，嘗試增量事件偵測
+            # 新產生一個 voted_status，嘗試事件偵測
             self._incremental_event_detect()
 
 
@@ -234,9 +234,10 @@ class RealtimePipeline:
         else:
             self._surgery_incremental_detect()
 
+    # surrgery測試用
     def _surgery_incremental_detect(self):
         """
-        Surgery 模式的增量式事件偵測。
+        Surgery 模式的事件偵測。
         """
         idx = len(self.voted_statuses) - 1  # 最新的 voted index
         v_status = self.voted_statuses[idx] # 投票後的狀態
@@ -283,8 +284,8 @@ class RealtimePipeline:
         if self._ent_candidate_idx is None:
             return
 
-        cand_idx = self._ent_candidate_idx
-        elapsed = current_idx - cand_idx
+        cand_idx = self._ent_candidate_idx #0->1的候選
+        elapsed = current_idx - cand_idx # 時間差
 
         # 穩定期已達標 → 確認 ENT
         if elapsed >= self.stable_frame:
@@ -308,7 +309,8 @@ class RealtimePipeline:
             self._send_candidate_idx = None
             return
 
-        v_status = self.voted_statuses[current_idx]
+        # 以下是遇到遮擋
+        v_status = self.voted_statuses[current_idx] # 投票的狀態
 
         if v_status == 1:
             # 狀態正常(1)，繼續觀察
@@ -319,6 +321,7 @@ class RealtimePipeline:
         if self._ent_gap_start is None:
             self._ent_gap_start = current_idx
 
+        # 遮擋的長度
         gap_length = current_idx - self._ent_gap_start + 1
 
         if gap_length >= self.max_gap_frame:
@@ -338,7 +341,7 @@ class RealtimePipeline:
             return
 
         cand_idx = self._send_candidate_idx
-        window_end = cand_idx + self.send_confirm_threshold
+        window_end = cand_idx + self.send_confirm_threshold # 1->0的候選
 
         # 觀察窗還沒累積夠
         if current_idx < window_end:
@@ -374,10 +377,10 @@ class RealtimePipeline:
         print(f" zero_ratio={zero_ratio:.3f}, max_one_run={max_one_run}, max_zero_run={max_zero_run}")
 
         # 判定
-        if max_one_run >= 50:
+        if max_one_run >= 50: # 連續1大於50 frame，表示還在手術
             print(f"    [SEND失敗] 出現連續 {max_one_run} f 的 1 (仍在手術中)")
             self._send_candidate_idx = None  # 重設，等下次再重新開始
-        elif max_zero_run >= 150:
+        elif max_zero_run >= 150: # 連續0 大於 150 frame，
             # SEND 確認
             meta = self.frame_metadata[cand_idx]
             event = {
@@ -397,7 +400,7 @@ class RealtimePipeline:
             self._send_candidate_idx = None
 
     # ==================================================================
-    #  Door 模式：增量式事件偵測
+    #  Door 模式：增事件偵測
     #
     #  狀態流程：
     #  IDLE → ENT_CHECKING → ENT_ACTIVE → WAITING_SEND
@@ -406,7 +409,7 @@ class RealtimePipeline:
 
     def _door_incremental_detect(self):
         """
-        Door 模式的增量式事件偵測。
+        Door 模式的事件偵測。
         對應 Door_analyze.py 的邏輯，改為逐幀處理。
         """
         idx = len(self.voted_statuses) - 1 # 最新的 voted index 
