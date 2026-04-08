@@ -57,7 +57,7 @@ else:
     PROCESS_DATES = []
     GPU_ALLOCATION = {}
 
-# ============ 輔助函數 ============
+
 def get_video_dir_for_date(date_str):
     """獲取指定日期的視訊目錄"""
     return os.path.join(DATA_BASE_DIR, date_str)

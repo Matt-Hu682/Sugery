@@ -68,14 +68,28 @@ def process_dates_for_gpu(date_list, gpu_id, queue):
     from batch_runner import config as batch_runner_config
     sys.modules['config'] = batch_runner_config
     
+    # 動態匯入，避免在主進程中載入 CUDA
+    from core import PatientStatusAnalyzer
+    from realtime_pipeline import RealtimePipeline
+    from utils import video_start_time
+    
+    # 載入模型（移到迴圈外，每個 GPU 獨立行程只載入一次）
+    try:
+        print(f"⏳ 載入模型...")
+        analyzer = PatientStatusAnalyzer()
+        print(f"✓ 模型載入成功")
+    except Exception as e:
+        print(f"❌ 模型載入失敗: {e}")
+        queue.put({
+            "date": "init",
+            "status": "failed",
+            "message": f"Model load failed: {e}"
+        })
+        return
+    
     for date_idx, date_str in enumerate(date_list):
         print(f"\n[GPU{gpu_id} - {date_idx+1}/{len(date_list)}] 開始處理: {date_str}")
         print("-" * 70)
-        
-        # 動態匯入，避免在主進程中載入 CUDA
-        from core import PatientStatusAnalyzer
-        from realtime_pipeline import RealtimePipeline
-        from utils import video_start_time
         
         video_dir = get_video_dir_for_date(date_str)
         csv_output = get_csv_output_for_date(date_str)
@@ -87,20 +101,6 @@ def process_dates_for_gpu(date_list, gpu_id, queue):
                 "date": date_str,
                 "status": "failed",
                 "message": "Directory not found"
-            })
-            continue
-        
-        # 載入模型
-        try:
-            print(f"⏳ 載入模型...")
-            analyzer = PatientStatusAnalyzer()
-            print(f"✓ 模型載入成功")
-        except Exception as e:
-            print(f"❌ 模型載入失敗: {e}")
-            queue.put({
-                "date": date_str,
-                "status": "failed",
-                "message": f"Model load failed: {e}"
             })
             continue
         
@@ -193,14 +193,15 @@ def process_dates_for_gpu(date_list, gpu_id, queue):
                     # === AI 分析 (每幀直接送 VLM) ===
                     status, infer_time = analyzer.analyze_frame(analysis_frame, CURRENT_TEST)
                     
-                    # === 即時推入 Pipeline (與 main_realtime.py 完全相同) ===
-                    pipeline.push_frame_result(
-                        status=status,
-                        frame_idx=total_frames_analyzed,
-                        video_time=video_time_str,
-                        real_time=real_time_str,
-                        video_name=video_name
-                    )
+                    # === 即時推入 Pipeline（方案 B：只有 Video 模式才進 Pipeline）===
+                    if getattr(analyzer, 'push_to_pipeline', True):
+                        pipeline.push_frame_result(
+                            status=status,
+                            frame_idx=total_frames_analyzed,
+                            video_time=video_time_str,
+                            real_time=real_time_str,
+                            video_name=video_name
+                        )
                     
                     # 取得最新的 voted_status
                     voted = pipeline.voted_statuses[-1] if pipeline.voted_statuses else '-'
@@ -213,7 +214,11 @@ def process_dates_for_gpu(date_list, gpu_id, queue):
                     
                     # terminal 即時顯示 (與 main_realtime.py 格式一致)
                     state = pipeline.get_current_state()
-                    print(f"\r     {video_time_str} | raw={status} voted={voted} | "
+                    
+                    # 取得當前使用的模式 (如果是 Surgery 則固定為 Single)
+                    mode_str = getattr(analyzer, 'current_mode', 'Single')
+                    
+                    print(f"\r     {video_time_str} | [{mode_str[:3]}] raw={status} voted={voted} | "
                         f"state={state['confirmed_state_text']} | "
                         f"events={len(state['confirmed_events'])}   ", end="")
                     

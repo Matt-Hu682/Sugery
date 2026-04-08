@@ -21,25 +21,50 @@ class PatientStatusAnalyzer:
         
         self.processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
         self.run_date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.door_buffer = []  # 存放 Door 時序連續畫面
-        self.door_max_frames = 15  # 因為一秒有 5 幀，所以設定為 15 幀 (即看過去 3 秒的連續動作)
-        self.last_door_status = 0  # 追蹤上一次 Door 的結果，決定單圖/多圖模式
+        self.door_buffer = []     # 存放 Door 時序連續畫面
+        self.door_max_frames = 25  # 以 5fps 計算，25 幀 = 5 秒的連續動作
+        self.door_open = False     # 追蹤上一次 Single「門是否打開」，決定是否要切 Video 模式
+        self.current_mode = "Single"
+        self.door_video_zero_run = 0   # Video 模式下連續 0 的計數（門開但沒人進出的計時器）
+        self.door_video_zero_timeout = 50  # Video 連續 50 幀（約 10 秒）無人，自動退回 Single 模式
+        self.push_to_pipeline = False  # 方案 B：只有 Video 模式才許可進入 Pipeline
+        print("Model loaded successfully.")
         print("Model loaded successfully.")
     
-    def get_prompt(self, task_type):
+    def get_prompt(self, task_type, mode="single"):
         if task_type == "Door":
-            return """
-        請「專注觀察畫面大門區域」，忽略畫面中央的手術台與其他干擾。
-            請判斷：大門口是否正有「醫護人員推著推床」進出？
+            if mode == "single":
+                # ── 第一階段：門的開關偵測（最簡單，成功率最高）──
+                return """
+        請「只觀察畫面右上角的大門」，忽略房間內部的所有人物與設備。
 
-        【輸出 1 的條件：推床跨越門檻】(必須滿足)
-        - 大門口出現一台「有金屬欄杆或輪子的大型推床/車架」，且有穿著綠色手術服的醫護人員，正在將它【推越/跨過】這道大門的門檻。(不管推床上是空的、還是蓋滿了綠色布單，只要有「推床」被推著跨越門檻，就是 1)。
+        請判斷：這扇手術室的大門，目前是「打開的」還是「關著的」？
 
-        【輸出 0 的條件：無推床進出】(只要符合任一項，立即輸出 0)
-        - 【徒手走路 (極重要)】：大門口有穿著綠衣服的醫護人員進出，但他們是「徒手走路」，雙手【沒有】推動任何大型推床。
-        - 【走廊路過】：外面走廊上的人事物只是背景路過，沒有轉彎跨越門檻進入。
-        - 【大門口淨空】：大門關閉，或是門雖然開著但完全沒人進出。
-        - 【動作不在門口】：畫面中央或左側發生的任何動作請直接忽略，只要大門沒有「推床被推過」，一律輸出 0。
+        【輸出 1 的條件：門是打開的】
+        - 看到門縫、門扇向側邊移動、或透過打開的門可以看到外面走廊的景象。
+        - 只要有任何縫隙或開口都算打開，不需要完全敞開。
+
+        【輸出 0 的條件：門是關著的】
+        - 大門完全緊閉，沒有任何縫隙。
+        - 不確定或無法清楚看到門的狀態，也輸出 0。
+
+        請只回答數字: 0 或 1
+        """
+            else:
+                # ── 第二階段：門打開後，用 Video 確認是否有病床在移動 ──
+                return """
+        請仔細觀看這段連續 10 秒鐘的影像序列（Video）。
+        背景：手術室的大門剛剛被偵測到打開了，請判斷這個開門動作，是否伴隨「病床或輪椅的進出」？
+
+        【輸出 1 的條件：有病床正在通過大門】(符合任一項即可)
+        1. 看到「一群醫護人員（兩名以上）合力」圍繞在病床/手術推床旁邊，推著它移向大門方向。
+        2. 看到病床/手術推床正在「穿越門框」（不管是進來還是出去）。
+        3. 看到大門口的通道被一張大型推床「佔滿」，且有向某一方向持續移動的動態。
+
+        【輸出 0 的條件：只是人走動，沒有病床】
+        - 只有醫護人員徒手走進走出，沒有推任何大型載具。
+        - 只有一個人進出，沒有一群人的護送陣仗。
+        - 門雖然開著但完全沒有人在移動（靜止畫面）。
 
         請只回答數字: 0 或 1
         """
@@ -73,22 +98,30 @@ class PatientStatusAnalyzer:
         image_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(image_rgb)
 
-        prompt = self.get_prompt(task_type)
-
         if task_type == "Door":
-            # 永遠緩衝畫面（維持滑動窗口）
+            # 永遠維持滑動視窗緩衝
             self.door_buffer.append(pil_image)
             if len(self.door_buffer) > self.door_max_frames:
                 self.door_buffer.pop(0)
 
-            if self.last_door_status == 1:
-                # === Clip 模式：上一幀偵測到病人，用多圖時序確認 ===
-                content = []
-                for img in self.door_buffer:
-                    content.append({"type": "image", "image": img})
-                content.append({"type": "text", "text": prompt})
+            if self.door_open:
+                # ── 第二階段：Video 模式 ──
+                # 上一幀 Single 偵測到門打開了，現在用 5 秒的影片確認是否有病床行進
+                self.current_mode = "Video"
+                prompt = self.get_prompt(task_type, mode="video")
+                content = [
+                    {
+                        "type": "video",
+                        "video": list(self.door_buffer),
+                        "fps": 5.0  # 每隔 0.2 秒一幀 = 5fps
+                    },
+                    {"type": "text", "text": prompt}
+                ]
             else:
-                # === 單圖模式：平時只送當前幀，省推論成本 ===
+                # ── 第一階段：Single 模式（輕量） ──
+                # 平常只看一張圖，判斷門有沒有打開
+                self.current_mode = "Single"
+                prompt = self.get_prompt(task_type, mode="single")
                 content = [
                     {"type": "image", "image": pil_image},
                     {"type": "text", "text": prompt},
@@ -102,6 +135,7 @@ class PatientStatusAnalyzer:
             ]
         else:
             # Surgery 等模式維持單解析單圖片
+            prompt = self.get_prompt(task_type, mode="single")
             messages = [
                 {
                     "role": "user",
@@ -131,11 +165,36 @@ class PatientStatusAnalyzer:
         output_text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0].split("assistant\n")[-1].strip()
         result = parse_response(output_text)
 
-        # Door: 更新模式追蹤
+        # Door: 分階段更新狀態
         if task_type == "Door":
-            self.last_door_status = result
+            if self.current_mode == "Single":
+                # ── Single 的結果僅作內部開關，不進 Pipeline ──
+                self.push_to_pipeline = False  # [方案 B] Single 結果不進 Pipeline
+                self.door_open = (result == 1)
+                if self.door_open:
+                    self.door_video_zero_run = 0  # 重置計時器
+                    print(f"  [Door] 🚪 門打開！切換到 Video 模式確認病床...")
+            else:
+                # ── Video 的結果才進 Pipeline ──
+                self.push_to_pipeline = True  # [方案 B] Video 結果進 Pipeline
+
+                if result == 0:
+                    # 門打開但沒有病床在動
+                    self.door_video_zero_run += 1
+                    if self.door_video_zero_run >= self.door_video_zero_timeout:
+                        # 連續無人 10 秒 → 銷毀本次，退回 Single 模式守門
+                        self.door_open = False
+                        self.door_video_zero_run = 0
+                        print(f"  [Door] ⌛ 門敞開 {self.door_video_zero_timeout * 0.2:.0f} 秒無人進出，退回 Single 模式")
+                else:
+                    # 有病床在動，重置計時器
+                    self.door_video_zero_run = 0
+        else:
+            # Surgery 等其他模式永遠進 Pipeline
+            self.push_to_pipeline = True
 
         return result, infer_time
+
 
     @staticmethod
     def detect_motion(gray_curr, gray_prev, diff_thresh=25, area_thresh=0.005):
