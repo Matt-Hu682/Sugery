@@ -182,24 +182,34 @@ def main():
                 analysis_frame = frame[y1:y2, x1:x2]
 
             # === AI 分析 (每幀直接送 VLM) ===
-            status, infer_time = analyzer.analyze_frame(analysis_frame, CURRENT_TEST)
+            status, vlm_vote, infer_time = analyzer.analyze_frame(analysis_frame, CURRENT_TEST, full_frame=frame, current_sec=current_sec, current_frame=total_frames_analyzed)
 
             # 推入即時 Pipeline
-            pipeline.push_frame_result(
-                status=status,
-                frame_idx=total_frames_analyzed,
-                video_time=video_time_str,
-                real_time=real_time_str,
-                video_name=video_name
-            )
+            if getattr(analyzer, 'push_to_pipeline', True):
+                pipeline.push_frame_result(
+                    status=status,
+                    frame_idx=total_frames_analyzed,
+                    video_time=video_time_str,
+                    real_time=real_time_str,
+                    video_name=video_name
+                )
+            else:
+                # 不送進 Pipeline 的狀態（例如 Single 模式的門開了），對 Pipeline 來說一律維持 0
+                pipeline.push_frame_result(
+                    status=0,
+                    frame_idx=total_frames_analyzed,
+                    video_time=video_time_str,
+                    real_time=real_time_str,
+                    video_name=video_name
+                )
 
             # 取得目前狀態
             state = pipeline.get_current_state()
 
-            # 取得最新的 voted_status (如果有的話)
+            # 統一從 pipeline.voted_statuses 讀取 voted（Door/Surgery 皆同）
             voted = pipeline.voted_statuses[-1] if pipeline.voted_statuses else '-'
 
-            # 寫入 CSV (含 voted_status)
+            # 寫入 CSV
             row = [video_name, frame_idx, video_time_str, real_time_str,
                 status, voted, f"{infer_time:.3f}"]
             with open(raw_csv_path, 'a', newline='', encoding='utf-8-sig') as f:
@@ -216,7 +226,8 @@ def main():
                     break
 
             # terminal 簡易顯示
-            print(f"\r  {video_time_str} | raw={status} voted={voted} | "
+            vlm_info = f" vlm={vlm_vote}" if CURRENT_TEST == "Door" and vlm_vote != '' else ""
+            print(f"\r  {video_time_str} | raw={status} voted={voted}{vlm_info} | "
                 f"state={state['confirmed_state_text']} | "
                 f"events={len(state['confirmed_events'])}   ", end="")
 
@@ -265,59 +276,115 @@ def main():
         print(f"\n 事件報告: {report_path}")
         print(f"   共偵測到 {len(summary) // 2} 組手術事件")
 
-        for row in summary:
-            print(f"   {row['Surgery_No']} | {row['Type']} | {row['Video_Time']} | {row['Real_Time']}")
+        # --- 8. 額外輸出：所有單獨偵測事件 (不論成對) ---
+        all_events = pipeline.get_all_events()
+        if all_events:
+            all_events_dir = os.path.join(os.path.dirname(CSV_OUTPUT), "all_events")
+            os.makedirs(all_events_dir, exist_ok=True)
+            all_events_path = os.path.join(all_events_dir, f"All_Recognized_Events_{CURRENT_TEST}_{run_date}.csv")
+            with open(all_events_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=['event_type', 'video_time', 'real_time', 'video_name'])
+                writer.writeheader()
+                writer.writerows(all_events)
+            print(f" 所有偵測事件紀錄於: {all_events_path} (共 {len(all_events)} 筆)")
 
-        # --- 8. 剪輯事件前後 3 分鐘的影片片段 ---
+        # --- 9. 跨影片剪輯事件前後 3 分鐘的片段 ---
         video_output_dir = os.path.join(report_dir, "videos")
         os.makedirs(video_output_dir, exist_ok=True)
 
+        # 建立所有影片的「絕對時間軸」清單 (從檔名解析 unix timestamp)
+        def get_video_abs_ts(path):
+            try:
+                return int(os.path.basename(path).split('-')[3].split('.')[0])
+            except:
+                return None
+
+        all_videos = []
+        for vpath in sorted(video_path_map.values()):
+            ts = get_video_abs_ts(vpath)
+            if ts:
+                all_videos.append({"path": vpath, "ts": ts})
+        all_videos.sort(key=lambda x: x["ts"])
+
+        PRE_POST_SEC = 180  # 事件前後各 3 分鐘
+
         for row in summary:
             vname = row['Video_Name']
-            event_type = row['Type']  # ENT 或 SEND
+            event_type = row['Type']
             surg_num = ''.join(filter(str.isdigit, row['Surgery_No']))
-            event_real_time = row['Real_Time'].replace(':', '')  # "08:45:09" → "084509"
-            video_time_str = row['Video_Time']  # "00:20:48"
+            event_real_time = row['Real_Time'].replace(':', '')
+            video_time_str = row['Video_Time']
 
-            # 原始影片的起始時間 (從檔名取)
-            try:
-                vid_start_time = vname.split('-')[2]  # "074509"
-            except IndexError:
-                vid_start_time = "000000"
+            # 組出輸出檔名
+            parts_name = vname.split('-')
+            surg_date_str = parts_name[1] if len(parts_name) >= 2 else surgery_date
+            vid_time_str  = parts_name[2] if len(parts_name) >= 3 else "000000"
+            dst_name = f"{surg_date_str}-{event_type}_{surg_num}_{event_real_time}_{vid_time_str}.mp4"
+            dst_path = os.path.join(video_output_dir, dst_name)
 
-            # 輸出檔名: 20240103-ENT_1_084509_074509.mp4
-            dst_name = f"{surgery_date}-{event_type}_{surg_num}_{event_real_time}_{vid_start_time}.mp4"
+            if os.path.exists(dst_path):
+                print(f"   影片已存在: {dst_name}")
+                continue
 
+            # 計算事件的絕對時間 (unix)
             src_path = video_path_map.get(vname)
-            if src_path and os.path.exists(src_path):
-                dst_path = os.path.join(video_output_dir, dst_name)
-                if os.path.exists(dst_path):
-                    print(f"   影片已存在: {dst_name}")
-                    continue
-
-                # 計算剪輯的起迄時間 (事件時間 ±3 分鐘)
-                try:
-                    parts = video_time_str.split(':')
-                    event_sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                    clip_start = max(0, event_sec - 180)  # 前 3 分鐘
-                    clip_duration = 360  # 共 6 分鐘
-
-                    # 用 ffmpeg 剪輯
-                    cmd = [
-                        'ffmpeg', '-y',
-                        '-ss', str(clip_start),
-                        '-i', src_path,
-                        '-t', str(clip_duration),
-                        '-c', 'copy',  # 不重新編碼，速度很快
-                        '-avoid_negative_ts', '1',
-                        dst_path
-                    ]
-                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    print(f"   影片已剪輯: {dst_name} (事件前後 3 分鐘)")
-                except Exception as e:
-                    print(f"   剪輯失敗: {dst_name} ({e})")
-            else:
+            if not src_path:
                 print(f"   找不到影片: {vname}")
+                continue
+
+            try:
+                vt_parts = video_time_str.split(':')
+                event_offset = int(vt_parts[0])*3600 + int(vt_parts[1])*60 + int(vt_parts[2])
+                src_abs_ts = get_video_abs_ts(src_path)
+                event_abs_ts = src_abs_ts + event_offset
+                target_start_ts = event_abs_ts - PRE_POST_SEC
+                target_end_ts   = event_abs_ts + PRE_POST_SEC
+
+                writer = None
+                written_frames = 0
+                opened_vids = 0
+
+                # 掃描所有影片，找時間軸有交集的
+                for v in all_videos:
+                    cap_c = cv2.VideoCapture(v["path"])
+                    fps_c = cap_c.get(cv2.CAP_PROP_FPS) or 5.0
+                    total_f = int(cap_c.get(cv2.CAP_PROP_FRAME_COUNT))
+                    duration_c = total_f / fps_c
+                    vid_s = v["ts"]
+                    vid_e = vid_s + duration_c
+
+                    if vid_e < target_start_ts or vid_s > target_end_ts:
+                        cap_c.release()
+                        continue
+
+                    opened_vids += 1
+                    if writer is None:
+                        cw = int(cap_c.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        ch = int(cap_c.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        writer = cv2.VideoWriter(dst_path, fourcc, fps_c, (cw, ch))
+
+                    read_s = max(0, target_start_ts - vid_s)
+                    read_e = min(duration_c, target_end_ts - vid_s)
+                    cap_c.set(cv2.CAP_PROP_POS_FRAMES, int(read_s * fps_c))
+
+                    while cap_c.isOpened():
+                        ret_c, frm_c = cap_c.read()
+                        if not ret_c: break
+                        if cap_c.get(cv2.CAP_PROP_POS_FRAMES) > int(read_e * fps_c): break
+                        writer.write(frm_c)
+                        written_frames += 1
+
+                    cap_c.release()
+
+                if writer:
+                    writer.release()
+                    print(f"   影片已剪輯: {dst_name} (橫跨 {opened_vids} 支影片, {written_frames} 幀)")
+                else:
+                    print(f"   找不到對應時間範圍的影片: {dst_name}")
+
+            except Exception as e:
+                print(f"   剪輯失敗: {dst_name} ({e})")
     else:
         print("\n未偵測到成對的手術事件。")
 

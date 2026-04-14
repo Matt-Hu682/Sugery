@@ -96,9 +96,57 @@ class RealtimePipeline:
             'real_time': real_time,
             'video_name': video_name,
         })
+        
+        # 新邏輯：如果 status == 2 (推入) 或 3 (推出)，直接由 VLM 回報確認跳過投票！
+        if self.task_type == "Door":
+            if status == 2:
+                self._door_direct_confirm(event_type="ENT")
+            elif status == 3:
+                self._door_direct_confirm(event_type="SEND")
 
         # 延遲投票: 只要累積夠 half_window 幀，就可以對較早的幀做置中投票
         self._try_delayed_vote()
+        
+    def _door_direct_confirm(self, event_type="ENT"):
+        """Door 模式收到絕對確認時，繞過投票與穩定期，直接切換狀態。"""
+        idx = len(self.raw_statuses) - 1
+        meta = self.frame_metadata[idx]
+        
+        if self._last_surgery_end_idx is not None:
+            if (idx - self._last_surgery_end_idx) < self.door_cooldown:
+                return # 冷卻中
+                
+        if event_type == "ENT":
+            event = {
+                'event_type': 'ENT',
+                'video_name': meta['video_name'],
+                'video_time': meta['video_time'],
+                'real_time': meta['real_time'],
+            }
+            self.confirmed_events.append(event)
+            self.latest_event = event
+            self.current_confirmed_state = 1
+            self._door_ent_start_idx = idx
+            self._door_state = 'WAITING_SEND'
+            print(f"\n  > [光速確認] ENT (推入) @ {meta['video_time']} | {meta['video_name'][:20]}...")
+            
+        elif event_type == "SEND":
+            if self._door_ent_start_idx is None:
+                self._door_ent_start_idx = 0
+            # 既然是模型直接看到的 SEND，不嚴格卡間隔限制，只要記錄即可
+            event = {
+                'event_type': 'SEND',
+                'video_name': meta['video_name'],
+                'video_time': meta['video_time'],
+                'real_time': meta['real_time'],
+            }
+            self.confirmed_events.append(event)
+            self.latest_event = event
+            self.current_confirmed_state = 0
+            self._last_surgery_end_idx = idx
+            self._door_state = 'IDLE' # SEND 後回歸 IDLE
+            self._door_ent_start_idx = None
+            print(f"\n  > [光速確認] SEND (推出) @ {meta['video_time']} | {meta['video_name'][:20]}...")
 
     def flush(self):
         """
@@ -193,6 +241,12 @@ class RealtimePipeline:
                 surg_idx += 1
 
         return summary
+
+    def get_all_events(self):
+        """
+        回傳所有已確認的單獨事件列表 (不管是否成對)。
+        """
+        return list(self.confirmed_events)
 
 
 
