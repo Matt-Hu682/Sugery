@@ -27,13 +27,18 @@ GPU_IDS = [
     "MIG-def3ca53-d2a7-51a8-890e-7bededa36e64"   # Device 1
 ]
 
+# 已經處理完畢，需要跳過的日期名單 (填入該日期的資料夾名稱即可)
+# 範例: ["20231201", "20231202"]
+IGNORE_DATES = []
+
 def auto_detect_dates():
-    """自動檢測 data 目錄中的所有日期資料夾"""
+    """自動檢測 data 目錄中的所有日期資料夾，並排除已設定忽略的日期"""
     dates = []
     if os.path.exists(DATA_BASE_DIR):
         for item in sorted(os.listdir(DATA_BASE_DIR)):
             item_path = os.path.join(DATA_BASE_DIR, item)
-            if os.path.isdir(item_path):
+            # 確保是資料夾，且不在忽略清單內
+            if os.path.isdir(item_path) and item not in IGNORE_DATES:
                 dates.append(item)
     return dates
 

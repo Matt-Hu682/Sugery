@@ -23,7 +23,8 @@ class PatientStatusAnalyzer:
         self.run_date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.door_buffer = []     # 存放 Door 時序連續畫面
         self.door_max_frames = 50  # 以 5fps 計算，25 幀 = 5 秒的連續動作
-        self.door_open = False     # 追蹤上一次 Single，決定是否要切 Video 模式
+        self.door_open = False     # 門是否開著 (Stage 1 標記)
+        self.bed_detected = False  # 門開後是否看到病床 (Stage 2 標記)
         self.current_mode = "Single"
         self.door_video_zero_run = 0   # Video 模式下連續 0 的計數
         self.door_video_zero_timeout = 3
@@ -39,69 +40,75 @@ class PatientStatusAnalyzer:
             if mode == "single":
                 # ── 第一階段：門的開關偵測（最簡單，成功率最高）──
                 return """
-        請觀察大門。
+                請觀察畫面中的大門。
 
-        請判斷：大門目前是「打開的」還是「關著的」？
+                【輸出 1：門是開著的】
+                - 可見走廊或外部空間
+                - 門呈半開或全開狀態
 
-        【輸出 1 的條件：門是打開的】
-        - 打開的門看的到外面的景象。
+                【輸出 0：門是關著的】
+                - 門完全緊閉，看不到外面的空間
+                
 
-        【輸出 0 的條件：門是關著的】
-        - 大門是完全緊閉。
-
-
-        請只回答數字: 0 或 1
-        """
+                請只回答數字：0 或 1
+                """
+            elif mode == "single_bed":
+                # ── 新增：第二階段，確認門開區域是否有病床出現 ──
+                return """
+                請觀察畫面中是否有出現載人的推床、輪椅或是穿藍色手術服的病人。
+                
+                【輸出 1：看到推床、輪椅】
+                - 畫面中出現了有躺著人的推床(旁邊會有綠色衣服的醫護人員)、輪椅。
+                
+                【輸出 0：沒看到推床、輪椅】
+                - 只有醫護人員(綠色衣服)走動，或空無一人。
+                
+                請只回答數字：0 或 1
+                """
             else:
                 # ── 第二階段：門打開後，用 Video 確認是否有病床在移動 ──
                 return """
-                請仔細觀察這段影像序列。攝影機位於手術室內部，鏡頭對準大門口。
+                請觀察這段影像序列，只判斷「載著病人的推床或輪椅」是否為推入或推出。
 
-                【空間定義】
-                - 畫面上方：門口（外）
-                - 畫面下方：室內（內）
+                攝影機視角：
+                - 大門在畫面中央偏上
+                - 畫面下方是室內
+                - 畫面上方是門外或走廊
 
-                【最重要規則】
+                判斷流程：
+                1. 先找載著病人的推床或輪椅
+                - 若沒有，輸出 0
 
-                本任務是判斷推床或輪椅是否「經過門」。
-                只有當載人的推床或有坐著的人的輪椅從門的另一側出現，
-                並完整通過門的位置，
-                才允許輸出 2 或 3。
+                2. 判斷起點
+                - 起點在畫面下方室內，才可能是 3
+                - 起點在畫面上方門外，才可能是 2
+                - 起點不明確，輸出 0
 
-                如果沒有完整經過門，
-                一律輸出 0。
+                3. 判斷是否持續朝門移動並完整穿門
+                - 若只是門口附近短距離移動、左右移動、停住、被遮擋，輸出 0
+                - 若沒有完整穿過門，輸出 0
 
-                【判定邏輯】
+                輸出 3：
+                - 載病人的推床或輪椅起始在畫面下方室內
+                - 持續往上方門口移動
+                - 完整穿過門並往上離開或消失
 
-                (ENT - 推入)：
+                輸出 2：
+                - 載病人的推床或輪椅起始在畫面上方門外
+                - 持續往下方室內移動
+                - 完整穿過門並進入室內
 
-                推床或輪椅：
-                - 最初位於門外（上方）向室內移動
-                - 過程完整穿過門並進入室內
-                - 推床上載有病人或是輪椅上有坐著的人
+                輸出 0：
+                - 沒有載病人的推床或輪椅
+                - 起點不明確
+                - 沒有完整穿門
+                - 只在門口附近移動
+                - 無法確認方向
 
-                → 輸出：2
-                
-                
-                (SEND - 推出)：
-
-                推床：
-                - 最初位於室內（下方)向門方向移動
-                - 過程完整穿過門並離開室內，最終進入門外，或在門的位置消失
-                - 上面載有病人（蓋綠色棉被）
-
-                → 輸出：3
-
-
-                符合以下任一情況視為0：
-
-                1. 只有大門打開或只是醫護人員在走動。
-                2. 畫面中沒有推床或輪椅穿過門。
-                3. 推床或輪椅只在門口上方的走廊區域左右移動（例如從左到右或右到左）。
-                4. 推床或輪椅停在門附近或正在準備進出，但沒有完整穿過門。
-                5. 在整段影像中，推床沒有從門外進入室內，也沒有從室內離開。
-                6. 醫護人員推的是金屬框架、垃圾桶、小型儀器、推車
-                符合上述條件者，請輸出：0
+                重要：
+                - 不可因為推床接近門口就判成 2 或 3
+                - 必須同時滿足「起點正確 + 方向正確 + 完整穿門」
+                - 若無法確定，輸出 0
 
                 請只回答數字：0、2 或 3
         """
@@ -155,27 +162,34 @@ class PatientStatusAnalyzer:
             video_frame = full_frame
         video_rgb = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
         pil_full = Image.fromarray(video_rgb)
+        
+        # 真正的無裁切全畫面 (供 Stage 2 使用)
+        raw_rgb = cv2.cvtColor(full_frame, cv2.COLOR_BGR2RGB)
+        pil_raw = Image.fromarray(raw_rgb)
 
         if task_type == "Door":
-            self.door_buffer.append(pil_full)  # Video buffer 存 Video 裁切後的幀
+            self.door_buffer.append(pil_full)
 
             if not self.door_open:
-                # ── 第一階段：Single 模式，用裁切後小圖判斷門有沒有打開 ──
+                # ── 第一階段：Single (Door Check) ──
                 self.current_mode = "Single"
                 prompt = self.get_prompt(task_type, mode="single")
-                content = [
-                    {"type": "image", "image": pil_image},  # 裁切後小圖
-                    {"type": "text", "text": prompt},
-                ]
+                content = [{"type": "image", "image": pil_image}, {"type": "text", "text": prompt}]
+            elif not self.bed_detected:
+                # ── 第二階段：Single (Bed Check) ──
+                # 門開了，尋找病床。改用 pil_raw (完全無裁切原圖) 讓視野最大化
+                self.current_mode = "Single_Bed"
+                prompt = self.get_prompt(task_type, mode="single_bed")
+                content = [{"type": "image", "image": pil_raw}, {"type": "text", "text": prompt}]
             elif len(self.door_buffer) < self.door_max_frames:
-                # ── 第二階段：Video 模式，buffer 尚未蓄滿，繼續等待，跳過本幀 ──
+                # ── 第三階段前奏：蓄集 Buffer ──
                 self.current_mode = "Video"
                 self.push_to_pipeline = False
                 buf_count = len(self.door_buffer)
-                print(f"  [Door] 蓄集中... ({buf_count}/{self.door_max_frames} 幀)", end="\r")
-                return -1, buf_count, 0.0  # vlm_vote = 目前已蓄集幀數
+                print(f"  [Door] 看到推床！集幀中... ({buf_count}/{self.door_max_frames})", end="\r")
+                return -1, f"Stg3(Buf={buf_count})", 0.0
             else:
-                # ── 第二階段：Video 模式，buffer 蓄滿 → 執行一次推論 ──
+                # ── 第三階段：Video (Event Analyze) ──
                 self.current_mode = "Video"
                 prompt = self.get_prompt(task_type, mode="video")
                 content = [
@@ -243,28 +257,45 @@ class PatientStatusAnalyzer:
 
                 if is_open:
                     self.door_open_count += 1
-                    print(f"  [Door]  門持續打開 ({self.door_open_count}/{self.door_open_threshold} 幀)", end="\r")
+                    print(f"  [Door] Stage 1: 門開中 ({self.door_open_count}/{self.door_open_threshold})", end="\r")
                     if self.door_open_count >= self.door_open_threshold:
-                        # 集滿 20 幀連續門開，切換到 Video 模式
-                        # buffer 裡此時就是純粹的 20 幀開門過程
                         self.door_open = True
-                        self.door_video_zero_run = 0
+                        self.bed_detected = False # 進入 Stage 2
                         self.door_open_count = 0
-                        print(f"\n  [Door] 滿 {self.door_open_threshold} 幀連續門開！切換到 Video 模式（buffer={len(self.door_buffer)} 幀）...")
+                        self.door_buffer.clear() # 確定門開時清空 buffer，從現在開始看人
+                        print(f"\n  [Door] Stage 1 OK! 門開了，進入 Stage 2 (尋找推床)")
                 else:
-                    # 門關了，重置計數器且清空 buffer
-                    if self.door_open_count > 0:
-                        print(f"\n  [Door] 門關閉，計數器重置 ({self.door_open_count})")
                     self.door_open_count = 0
-                    self.door_buffer.clear()  # 門關了就清空，下次開門從第1幀開始串集純正車
+                    self.door_buffer.clear()
+            elif task_type == "Door" and self.current_mode == "Single_Bed":
+                # ── Stage 2 邏輯 ──
+                self.push_to_pipeline = False
+                has_bed = (vlm_result == 1)
+                pipeline_status = 1 # 門還是開著的
+
+                if has_bed:
+                    self.bed_detected = True
+                    self.door_open_count = 0
+                    # 💡 注意：這裡不再 clear()，保留「從門開到看到床」的影像
+                    print(f"\n  [Door] Stage 2 OK! 抓到推床，接續 Stage 3 集幀...")
+                else:
+                    self.door_open_count += 1
+                    print(f"  [Door] Stage 2: 沒看到推床 ({self.door_open_count}/50)", end="\r")
+                    if self.door_open_count >= 50: # 超過 10 秒沒推床進來
+                        self.door_open = False
+                        self.bed_detected = False
+                        self.door_open_count = 0
+                        print(f"\n  [Door] Stage 2 Timeout! 沒看到推床，退回 Stage 1")
             else:
-                # ── Video 的結果才進 Pipeline ──
+                # ── Stage 3 邏輯 (Video) ──
                 self.push_to_pipeline = True
                 pipeline_status = vlm_result
 
                 if vlm_result in [2, 3]:
-                    # 若偵測到推床，清空 buffer 並準備進入冷卻/退回 Single
+                    # 若偵測到推床，清空並退回模式
                     self.door_buffer.clear()
+                    self.door_open = False
+                    self.bed_detected = False
 
                     # 事件 (ENT 或 SEND) 冷卻期檢查 (以幀數計算)
                     if self.last_event_video_sec is not None and current_frame is not None:
@@ -308,9 +339,16 @@ class PatientStatusAnalyzer:
             # Surgery 等其他模式永遠進 Pipeline
             self.push_to_pipeline = True
 
-        # Door 模式：vlm_vote = 實際 VLM 判定結果(0/2/3)或 Single 空字串
+        # Door 模式：vlm_vote = 回傳詳細的 Stage 與 VLM 原始輸出
         if task_type == "Door":
-            vlm_vote = pipeline_status if self.current_mode == "Video" else ''
+            if self.current_mode == "Single":
+                vlm_vote = f"Stg1(Door={vlm_result})"
+            elif self.current_mode == "Single_Bed":
+                vlm_vote = f"Stg2(Bed={vlm_result})"
+            elif self.current_mode == "Video":
+                vlm_vote = f"Stg3(Video={pipeline_status})"
+            else:
+                vlm_vote = ""
             return pipeline_status, vlm_vote, infer_time
 
         return pipeline_status, '', infer_time

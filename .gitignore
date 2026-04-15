@@ -22,6 +22,6 @@ temp/
 
 # OS
 .DS_Store
-
+*.png 
 # Old Backup / Tests
 SugerSystem_AI_v1/

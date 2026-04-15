@@ -6,7 +6,7 @@ import os
 BASE_DIR = "/home/cvlabgodzilla/Desktop/Sugery"
 
 # 單一影片測試用的路徑 (供 scripts/run_single_test.py 類使用)
-VIDEO_DIR = os.path.join(BASE_DIR, "data", "20240103")
+VIDEO_DIR = os.path.join(BASE_DIR, "data", "20240812test")
 CSV_OUTPUT = os.path.join(BASE_DIR, "outputs", "surgery_report.csv")
 
 MODEL_PATH = os.path.join(BASE_DIR, "models", "Qwen3-VL-8B-Instruct-FP8")

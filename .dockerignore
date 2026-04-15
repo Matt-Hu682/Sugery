@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv*/
+venv*/
+VLM-1/
+
+# VSCode / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 專案產出的巨量資料 (非常重要！避免 Docker Build 卡死)
+data/
+data_video/
+models/
+outputs/
+result/
+all_events/
+*.mp4
+*.avi
+*.csv
+
+# 其他除錯或暫存檔案
+logs/
+*.log
+.gemini/
