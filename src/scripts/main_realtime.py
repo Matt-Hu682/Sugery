@@ -23,6 +23,12 @@ import time
 import numpy as np
 from datetime import datetime, timedelta
 
+# Ensure sibling modules under `src/` are importable even when this file is run directly.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
 from config import (
     VIDEO_DIR, CSV_OUTPUT, MODEL_PATH,
     STRIDE_SEC, VIS_HEIGHT, VIS_WIDTH,
@@ -182,7 +188,15 @@ def main():
                 analysis_frame = frame[y1:y2, x1:x2]
 
             # === AI 分析 (每幀直接送 VLM) ===
-            status, infer_time = analyzer.analyze_frame(analysis_frame, CURRENT_TEST)
+            status, vlm_vote, infer_time = analyzer.analyze_frame(
+                analysis_frame,
+                CURRENT_TEST,
+                full_frame=frame,
+                current_sec=current_sec,
+                current_frame=total_frames_analyzed,
+                video_name=video_name,
+                real_time=real_time_str,
+            )
 
             # 推入即時 Pipeline
             pipeline.push_frame_result(

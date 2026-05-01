@@ -1,25 +1,4 @@
 # realtime_pipeline.py
-"""
-即時手術偵測 Pipeline
-- 延遲置中投票清洗 (Delayed Centered Vote)
-- 增量式事件偵測 (Incremental Event Detection)
-
-用法:
-    pipeline = RealtimePipeline(half_window=5, stable_frame=900, max_gap_frame=50)
-    
-    # 每次 AI 分析完一幀後呼叫:
-    pipeline.push_frame_result(status, frame_idx, video_time, real_time, video_name)
-    
-    # 取得目前狀態:
-    state = pipeline.get_current_state()
-    
-    # 影片結束時刷出剩餘的幀:
-    pipeline.flush()
-"""
-
-from datetime import datetime
-
-
 class RealtimePipeline:
     def __init__(self, half_window=5, stable_frame=900, max_gap_frame=50,
                 send_confirm_threshold=900, task_type="Surgery"):

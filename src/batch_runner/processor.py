@@ -158,7 +158,10 @@ def process_dates_for_gpu(date_list, gpu_id, queue):
         os.makedirs(report_dir, exist_ok=True)
         
         pair_report_path = os.path.join(report_dir, f"Realtime_Events_{CURRENT_TEST}_{run_date}.csv")
-        all_events_path = os.path.join(report_dir, f"All_Recognized_Events_{CURRENT_TEST}_{run_date}.csv")
+        
+        all_events_dir = os.path.join(os.path.dirname(OUTPUTS_DIR), "all_events", data_month, folder_name)
+        os.makedirs(all_events_dir, exist_ok=True)
+        all_events_path = os.path.join(all_events_dir, f"All_Recognized_Events_{CURRENT_TEST}_{run_date}.csv")
         
         with open(pair_report_path, 'w', newline='', encoding='utf-8-sig') as f:
             csv.DictWriter(f, fieldnames=['Surgery_No', 'Type', 'Video_Time', 'Real_Time', 'Video_Name']).writeheader()
@@ -210,16 +213,37 @@ def process_dates_for_gpu(date_list, gpu_id, queue):
                         analysis_frame = frame[y1:y2, x1:x2]
                     
                     # === AI 分析 (每幀直接送 VLM) ===
-                    status, vlm_vote, infer_time = analyzer.analyze_frame(analysis_frame, CURRENT_TEST)
+                    status, vlm_vote, infer_time = analyzer.analyze_frame(
+                        analysis_frame,
+                        CURRENT_TEST,
+                        full_frame=frame,
+                        current_sec=current_sec,
+                        current_frame=total_frames_analyzed,
+                        video_name=video_name,
+                        real_time=real_time_str,
+                    )
+
+                    push_frame_idx = total_frames_analyzed
+                    push_video_time = video_time_str
+                    push_real_time = real_time_str
+                    push_video_name = video_name
+
+                    if CURRENT_TEST == "Door" and status in (2, 3):
+                        override_meta = analyzer.pop_event_metadata_override()
+                        if override_meta is not None:
+                            push_frame_idx = override_meta.get("frame_idx", push_frame_idx)
+                            push_video_time = override_meta.get("video_time", push_video_time)
+                            push_real_time = override_meta.get("real_time", push_real_time)
+                            push_video_name = override_meta.get("video_name", push_video_name)
                     
                     # === 即時推入 Pipeline ===
                     if getattr(analyzer, 'push_to_pipeline', True):
                         pipeline.push_frame_result(
                             status=status,
-                            frame_idx=total_frames_analyzed,
-                            video_time=video_time_str,
-                            real_time=real_time_str,
-                            video_name=video_name
+                            frame_idx=push_frame_idx,
+                            video_time=push_video_time,
+                            real_time=push_real_time,
+                            video_name=push_video_name
                         )
                     else:
                         pipeline.push_frame_result(
