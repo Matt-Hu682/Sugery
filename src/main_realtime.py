@@ -2,9 +2,13 @@
 import os
 import csv
 import time
+import warnings
 from datetime import datetime, timedelta
 
 import cv2
+
+# 過濾 transformers 的 processor kwargs 警告（避免每幀刷新終端）
+warnings.filterwarnings("ignore", category=UserWarning)
 
 from config import (
     CROP_REGION,
@@ -25,6 +29,7 @@ from utils import video_start_time
 
 # 設定gpu
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 
 def draw_osd(frame, state, infer_time_ms):
     h, w = frame.shape[:2]
@@ -150,7 +155,7 @@ def main():
 
         cam_label = TARGET_CAMERAS[0] if TARGET_CAMERAS else "unknown"
         folder_name = f"{surgery_date}_{ROOM}_{cam_label}"
-        report_dir = os.path.join(os.path.dirname(os.path.dirname(CSV_OUTPUT)), "result", folder_name, dataset_name)
+        report_dir = os.path.join(os.path.dirname(CSV_OUTPUT), "result", folder_name, dataset_name)
         os.makedirs(report_dir, exist_ok=True)
 
         pair_report_path = os.path.join(report_dir, f"Realtime_Events_{CURRENT_TEST}_{run_date}.csv")
@@ -292,6 +297,22 @@ def main():
             cap.release()
 
         pipeline.flush()
+
+        all_detected = pipeline.get_all_events()
+        if len(all_detected) > last_stored_all_count:
+            new_evts = all_detected[last_stored_all_count:]
+            with open(all_events_path, 'a', newline='', encoding='utf-8-sig') as af:
+                writer = csv.DictWriter(af, fieldnames=['event_type', 'video_time', 'real_time', 'video_name'])
+                writer.writerows(new_evts)
+            last_stored_all_count = len(all_detected)
+
+        summary = pipeline.get_event_summary()
+        if len(summary) > last_stored_pair_count:
+            new_pairs = summary[last_stored_pair_count:]
+            with open(pair_report_path, 'a', newline='', encoding='utf-8-sig') as pf:
+                writer = csv.DictWriter(pf, fieldnames=['Surgery_No', 'Type', 'Video_Time', 'Real_Time', 'Video_Name'])
+                writer.writerows(new_pairs)
+            last_stored_pair_count = len(summary)
 
         if SHOW_WINDOW:
             cv2.destroyAllWindows()

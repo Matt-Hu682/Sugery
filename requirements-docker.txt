@@ -1,0 +1,7 @@
+transformers>=4.40.0
+accelerate
+qwen-vl-utils
+opencv-python
+numpy
+Pillow
+tiktoken

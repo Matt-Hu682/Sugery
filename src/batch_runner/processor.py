@@ -310,6 +310,22 @@ def process_dates_for_gpu(date_list, gpu_id, queue):
         
         # === 刷出剩餘未投票的幀 (與 main_realtime.py 相同) ===
         pipeline.flush()
+
+        all_detected = pipeline.get_all_events()
+        if len(all_detected) > last_stored_all_count:
+            new_evts = all_detected[last_stored_all_count:]
+            with open(all_events_path, 'a', newline='', encoding='utf-8-sig') as af:
+                writer = csv.DictWriter(af, fieldnames=['event_type', 'video_time', 'real_time', 'video_name'])
+                writer.writerows(new_evts)
+            last_stored_all_count = len(all_detected)
+
+        summary = pipeline.get_event_summary()
+        if len(summary) > last_stored_pair_count:
+            new_pairs = summary[last_stored_pair_count:]
+            with open(pair_report_path, 'a', newline='', encoding='utf-8-sig') as pf:
+                writer = csv.DictWriter(pf, fieldnames=['Surgery_No', 'Type', 'Video_Time', 'Real_Time', 'Video_Name'])
+                writer.writerows(new_pairs)
+            last_stored_pair_count = len(summary)
         
         elapsed = time.time() - start_time
         print(f"\n✅ {date_str} 處理完成 - {processed_videos}個影片成功, {failed_videos}個失敗, "

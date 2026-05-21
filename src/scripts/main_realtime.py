@@ -144,10 +144,35 @@ def main():
     with open(raw_csv_path, 'w', newline='', encoding='utf-8-sig') as f:
         csv.writer(f).writerow(headers)
 
+    first_video = video_files[0] if video_files else ""
+    try:
+        surgery_date = os.path.basename(first_video).split('-')[1]
+    except (IndexError, AttributeError):
+        surgery_date = datetime.now().strftime("%Y%m%d")
+
+    cam_label = TARGET_CAMERAS[0] if TARGET_CAMERAS else "unknown"
+    folder_name = f"{surgery_date}_{ROOM}_{cam_label}"
+    report_dir = os.path.join(os.path.dirname(os.path.dirname(CSV_OUTPUT)), "result", folder_name)
+    os.makedirs(report_dir, exist_ok=True)
+
+    report_path = os.path.join(report_dir, f"Realtime_Events_{CURRENT_TEST}_{run_date}.csv")
+    all_events_dir = os.path.join(os.path.dirname(raw_csv_path), "all_events")
+    os.makedirs(all_events_dir, exist_ok=True)
+    all_events_path = os.path.join(all_events_dir, f"All_Recognized_Events_{CURRENT_TEST}_{run_date}.csv")
+
+    with open(report_path, 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.DictWriter(f, fieldnames=['Surgery_No', 'Type', 'Video_Time', 'Real_Time', 'Video_Name'])
+        writer.writeheader()
+    with open(all_events_path, 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.DictWriter(f, fieldnames=['event_type', 'video_time', 'real_time', 'video_name'])
+        writer.writeheader()
+
     # --- 5. 逐支影片、逐幀即時分析 ---
     total_frames_analyzed = 0
     user_quit = False
     video_path_map = {}  # video_name -> full_path 對照表
+    last_stored_all_count = 0
+    last_stored_pair_count = 0
 
     for vid_idx, video_path in enumerate(video_files):
         if user_quit:
@@ -219,6 +244,22 @@ def main():
             with open(raw_csv_path, 'a', newline='', encoding='utf-8-sig') as f:
                 csv.writer(f).writerow(row)
 
+            all_detected = pipeline.get_all_events()
+            if len(all_detected) > last_stored_all_count:
+                new_evts = all_detected[last_stored_all_count:]
+                with open(all_events_path, 'a', newline='', encoding='utf-8-sig') as af:
+                    writer = csv.DictWriter(af, fieldnames=['event_type', 'video_time', 'real_time', 'video_name'])
+                    writer.writerows(new_evts)
+                last_stored_all_count = len(all_detected)
+
+            summary = pipeline.get_event_summary()
+            if len(summary) > last_stored_pair_count:
+                new_pairs = summary[last_stored_pair_count:]
+                with open(report_path, 'a', newline='', encoding='utf-8-sig') as pf:
+                    writer = csv.DictWriter(pf, fieldnames=['Surgery_No', 'Type', 'Video_Time', 'Real_Time', 'Video_Name'])
+                    writer.writerows(new_pairs)
+                last_stored_pair_count = len(summary)
+
             # OSD 疊加顯示 (需要有螢幕才開啟，遠端 SSH 請保持 SHOW_WINDOW=False)
             if SHOW_WINDOW:
                 vis = cv2.resize(frame, (VIS_WIDTH, VIS_HEIGHT))
@@ -245,6 +286,22 @@ def main():
     # --- 6. 刷出剩餘未投票的幀 ---
     pipeline.flush()
 
+    all_detected = pipeline.get_all_events()
+    if len(all_detected) > last_stored_all_count:
+        new_evts = all_detected[last_stored_all_count:]
+        with open(all_events_path, 'a', newline='', encoding='utf-8-sig') as af:
+            writer = csv.DictWriter(af, fieldnames=['event_type', 'video_time', 'real_time', 'video_name'])
+            writer.writerows(new_evts)
+        last_stored_all_count = len(all_detected)
+
+    summary = pipeline.get_event_summary()
+    if len(summary) > last_stored_pair_count:
+        new_pairs = summary[last_stored_pair_count:]
+        with open(report_path, 'a', newline='', encoding='utf-8-sig') as pf:
+            writer = csv.DictWriter(pf, fieldnames=['Surgery_No', 'Type', 'Video_Time', 'Real_Time', 'Video_Name'])
+            writer.writerows(new_pairs)
+        last_stored_pair_count = len(summary)
+
     if SHOW_WINDOW:
         cv2.destroyAllWindows()
 
@@ -255,28 +312,8 @@ def main():
 
     summary = pipeline.get_event_summary()
     if summary:
-        # result/手術日期_手術室_攝影機/ 資料夾結構
-        # 從第一支影片檔名取手術日期 (例如 S01-20240103-... → 20240103)
-        first_video = video_files[0] if video_files else ""
-        try:
-            surgery_date = os.path.basename(first_video).split('-')[1]
-        except (IndexError, AttributeError):
-            surgery_date = datetime.now().strftime("%Y%m%d")
-
-        # 取目前使用的攝影機編號 (例如 ["S01"] → "S01")
-        cam_label = TARGET_CAMERAS[0] if TARGET_CAMERAS else "unknown"
-        folder_name = f"{surgery_date}_{ROOM}_{cam_label}"
-        report_dir = os.path.join(os.path.dirname(os.path.dirname(CSV_OUTPUT)), "result", folder_name)
-        os.makedirs(report_dir, exist_ok=True)
-        report_path = os.path.join(report_dir, f"Realtime_Events_{CURRENT_TEST}_{run_date}.csv")
-
-        with open(report_path, 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=['Surgery_No', 'Type', 'Video_Time',
-                                                'Real_Time', 'Video_Name'])
-            writer.writeheader()
-            writer.writerows(summary)
-
         print(f"\n 事件報告: {report_path}")
+        print(f" 所有偵測紀錄: {all_events_path}")
         print(f"   共偵測到 {len(summary) // 2} 組手術事件")
 
         for row in summary:

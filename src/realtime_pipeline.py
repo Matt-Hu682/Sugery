@@ -1,4 +1,5 @@
 # realtime_pipeline.py
+from config import SEND_MAX_CONSEC_ONE_FRAMES, SEND_MIN_CONSEC_ZERO_FRAMES
 class RealtimePipeline:
     def __init__(self, half_window=5, stable_frame=900, max_gap_frame=50,
                 send_confirm_threshold=900, task_type="Surgery"):
@@ -141,6 +142,43 @@ class RealtimePipeline:
             voted = 1 if (sum(window) / len(window)) >= 0.5 else 0
             self.voted_statuses.append(voted)
             self._incremental_event_detect()
+
+    def force_close_pending_send(self):
+        """
+        在 flush() 之後呼叫。
+        只處理 dataset 結尾 SEND 觀察窗未滿的情境：
+            - 若 _send_candidate_idx 存在（SEND 候選已啟動，只是窗口未滿），
+            用候選起始時間補發 SEND（那才是手術真正結束的時刻）。
+            - 若沒有 SEND 候選，即使仍在手術中，也不硬補最後一幀為 SEND。
+        只在 Surgery 模式下有效。
+        """
+        if self.task_type != "Surgery":
+            return
+        if self.current_confirmed_state != 1:
+            return  # 沒有進行中的手術，不需要強制 SEND
+        if not self.frame_metadata:
+            return  # 沒有任何幀資料
+        if self._send_candidate_idx is None:
+            return  # 沒有觀察到 SEND 候選，不把資料集最後一幀硬當成 SEND
+
+        meta = self.frame_metadata[self._send_candidate_idx]
+        reason = "SEND 候選起始時間（觀察窗未滿，資料集截止）"
+
+        event = {
+            'event_type': 'SEND',
+            'video_name': meta['video_name'],
+            'video_time': meta['video_time'],
+            'real_time':  meta['real_time'],
+            'forced':     True,  # 標記為強制補發
+        }
+        self.confirmed_events.append(event)
+        self.latest_event = event
+        self.current_confirmed_state = 0
+        self._send_candidate_idx = None
+        print(
+            f"\n  > [強制SEND] 補發 @ {meta['video_time']} "
+            f"（{reason}） | {meta['video_name'][:20]}..."
+        )
 
     def get_current_state(self):
         """
@@ -410,10 +448,10 @@ class RealtimePipeline:
         print(f" zero_ratio={zero_ratio:.3f}, max_one_run={max_one_run}, max_zero_run={max_zero_run}")
 
         # 判定
-        if max_one_run >= 50: # 連續1大於50 frame，表示還在手術
+        if max_one_run >= SEND_MAX_CONSEC_ONE_FRAMES: # 連續1大於閾值 frame，表示還在手術
             print(f"    [SEND失敗] 出現連續 {max_one_run} f 的 1 (仍在手術中)")
             self._send_candidate_idx = None  # 重設，等下次再重新開始
-        elif max_zero_run >= 150: # 連續0 大於 150 frame，
+        elif max_zero_run >= SEND_MIN_CONSEC_ZERO_FRAMES: # 連續0 大於閾値 frame，
             # SEND 確認
             meta = self.frame_metadata[cand_idx]
             event = {

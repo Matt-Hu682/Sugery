@@ -1,15 +1,18 @@
 # preview_crop.py
-# 用法: python preview_crop.py
+# 用法: python scripts/preview_crop.py
 # 功能: 從影片中抽一幀，顯示裁切前後的對比圖，並儲存成 PNG
 
 import cv2
 import os
 import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # ============ 設定區 ============
-VIDEO_DIR = "data/20240812test"   # 影片資料夾
+VIDEO_DIR = PROJECT_ROOT / "data" / "20240812test"   # 影片資料夾
 CROP = (250, 0, 680, 340)       # (x1, y1, x2, y2) 裁切範圍
-OUTPUT_DIR = "outputs"            # 輸出資料夾
+OUTPUT_DIR = PROJECT_ROOT / "outputs" / "preview"    # 輸出資料夾
 # ================================
 
 def find_video(video_dir, camera="S01"):

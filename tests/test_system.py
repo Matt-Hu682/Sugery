@@ -4,6 +4,10 @@
 import subprocess
 import sys
 import os
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = PROJECT_ROOT / "src"
 
 def test_ffmpeg():
     """測試 ffmpeg 是否安裝"""
@@ -32,12 +36,12 @@ def test_config():
     """測試配置載入"""
     print("\n⚙️  測試配置載入...")
     try:
-        sys.path.insert(0, 'src')
-        from multi_gpu.config import (
+        sys.path.insert(0, str(SRC_DIR))
+        from batch_runner.config import (
             _detected_dates, PROCESS_DATES, TEST_DATE,
             CURRENT_TEST, ROOM, TARGET_CAMERAS,
             DATA_BASE_DIR, OUTPUTS_DIR,
-            CROP_REGION, MOTION_DIFF_THRESH, STABLE_FRAME,
+            CROP_REGION, STABLE_FRAME,
             get_csv_output_for_date, get_gpu_for_date
         )
         print(f"   ✅ 配置載入成功")
@@ -69,7 +73,7 @@ def test_modules():
             all_ok = False
     
     try:
-        sys.path.insert(0, 'src')
+        sys.path.insert(0, str(SRC_DIR))
         from realtime_pipeline import RealtimePipeline
         print(f"   ✅ RealtimePipeline")
     except Exception as e:
@@ -83,8 +87,8 @@ def test_processor():
     """測試處理器載入"""
     print("\n🔧 測試處理器...")
     try:
-        sys.path.insert(0, 'src')
-        from multi_gpu.processor import process_dates_on_gpus, process_events_and_clip_videos
+        sys.path.insert(0, str(SRC_DIR))
+        from batch_runner.processor import process_dates_on_gpus, generate_report_and_clip_videos
         print(f"   ✅ 處理器載入成功")
         return True
     except Exception as e:
@@ -194,7 +198,7 @@ def main():
     
     if passed == total:
         print("\n🎉 所有測試通過！系統已準備好執行方案 B")
-        print("執行: python3 -m multi_gpu.processor")
+        print("執行: python3 -m batch_runner.processor")
         return 0
     else:
         print(f"\n⚠️  有 {total - passed} 項測試失敗，請檢查上述問題")

@@ -4,15 +4,15 @@
 
 ```bash
 # 1. 查看目前設定
-cd /home/ai/Sugery_AI
-python3 -c "from src.batch_runner.config import print_config; print_config()"
+cd /home/cvlabgodzilla/Desktop/Sugery
+PYTHONPATH=src python3 -c "from batch_runner.config import print_config; print_config()"
 
 # 2. 啟動多GPU處理
-python3 -m src.batch_runner.processor
+PYTHONPATH=src python3 -m batch_runner.processor
 ```
 或者，使用 `tmux` 啟動：
 ```bash
-bash src/scripts/run_production.sh
+bash src/scripts/run_with_tmux.sh
 ```
 
 ## 運行原理
@@ -61,9 +61,15 @@ GPU_IDS = ["...", "..."]
 
 ```
 Sugery_AI/
+├── scripts/                  # 專案工具腳本
+│   ├── diagnose_config.py    # 設定/日期/GPU 診斷
+│   ├── preview_crop.py       # 裁切預覽圖產生工具
+│   └── setup_mig_uuid.sh     # MIG UUID 設定輔助
+│
 ├── src/                      # 核心演算法庫
 │   ├── config.py             # 核心/全域共通設定 (模型、攝像頭對應、算法閾值)
 │   ├── core.py               # VLM 推論引擎 (PatientStatusAnalyzer)
+│   ├── main_realtime.py      # 單機/單日期即時模式入口
 │   └── realtime_pipeline.py  # 即時狀態機處理
 │
 ├── src/batch_runner/         # (原 multi_gpu) 負責排程、多日期處理
@@ -71,11 +77,16 @@ Sugery_AI/
 │   ├── config.py             # 繼承 src.config，負責 NAS路徑、UUID設定、自動掃描
 │   └── processor.py          # 多進程即時處理引擎
 │
-├── src/scripts/              # 執行腳本放置區
-│   ├── run_production.sh     # 正式批次跑所有資料 (tmux 雙視窗)
+├── src/scripts/              # GPU/tmux 輔助腳本
 │   ├── run_gpu0.py           # 單跑 GPU0 分配的批次
 │   ├── run_gpu1.py           # 單跑 GPU1 分配的批次
-│   └── run_single_test.py    # (原 main_realtime.py) 用來測試單一日期的效果
+│   └── run_with_tmux.sh      # tmux 雙窗格批次輔助
+│
+├── tests/                    # 測試與系統檢查
+│   ├── test_mini_run.py
+│   └── test_system.py
+│
+├── outputs/preview/          # 裁切預覽圖片
 └── models/                   # VLM 模型存放
 ```
 
@@ -84,8 +95,8 @@ Sugery_AI/
 ### 查看所有檢測到的日期
 
 ```bash
-python3 -c "
-from src.batch_runner.config import _detected_dates, PROCESS_DATES
+PYTHONPATH=src python3 -c "
+from batch_runner.config import _detected_dates, PROCESS_DATES
 print('所有日期:', _detected_dates)
 print('處理日期:', PROCESS_DATES)
 "
@@ -94,8 +105,14 @@ print('處理日期:', PROCESS_DATES)
 ### 單獨測試某個日期/環境效果
 
 ```bash
-cd /home/ai/Sugery_AI
-python3 src/scripts/run_single_test.py
+cd /home/cvlabgodzilla/Desktop/Sugery
+PYTHONPATH=src python3 src/main_realtime.py
+```
+
+### 產生裁切預覽圖
+
+```bash
+python3 scripts/preview_crop.py
 ```
 
 ### 監控GPU使用情況
@@ -112,5 +129,5 @@ nvidia-smi -l 1  # 實時重新整理
 ## 注意事項
 
 - ⚠️  每個 GPU 需要約 10-15GB VRAM
-- ⚠️  模型路徑預設為 `/home/ai/Sugery_AI/models/Qwen3-VL-8B-Instruct`
+- ⚠️  模型路徑預設為 `models/Qwen3-VL-8B-Instruct-FP8`
 - ⚠️  影片需要放在 `data/[日期]/` 子目錄中

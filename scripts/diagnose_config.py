@@ -5,13 +5,17 @@
 """
 import sys
 import os
-sys.path.insert(0, "/home/ai/Sugery_AI")
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = PROJECT_ROOT / "src"
+sys.path.insert(0, str(SRC_DIR))
 
 print("\n" + "=" * 70)
 print("🔍 診斷多 GPU 配置")
 print("=" * 70)
 
-from multi_gpu.config import (
+from batch_runner.config import (
     DATA_BASE_DIR,
     PROCESS_DATES,
     GPU_ALLOCATION,

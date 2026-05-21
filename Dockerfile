@@ -14,13 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace
+WORKDIR /home/cvlabgodzilla/Desktop/Sugery
 
-COPY requirements.txt .
-
+COPY requirements-docker.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements-docker.txt
 
 COPY . .
 
-CMD ["python", "src/batch_runner/processor.py"]
+CMD ["python", "src/main_parallel.py"]

@@ -8,13 +8,14 @@ import os
 import sys
 from multiprocessing import Process, Queue
 from datetime import datetime
+from pathlib import Path
 
-# 新增 multi_gpu 和 src 路徑
-sys.path.insert(0, "/home/ai/Sugery_AI")
-sys.path.insert(0, "/home/ai/Sugery_AI/src")
-sys.path.insert(0, "/home/ai/Sugery_AI/VLM-1/lib/python3.10/site-packages")
+# 新增 src 路徑
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT / "VLM-1" / "lib" / "python3.10" / "site-packages"))
 
-from multi_gpu.config import (
+from batch_runner.config import (
     PROCESS_DATES,
     GPU_ALLOCATION,
     get_video_dir_for_date,
