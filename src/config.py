@@ -2,15 +2,31 @@
 import os
 
 # 路徑設定
-BASE_DIR = "/home/cvlabgodzilla/Desktop/Sugery"
-TEST_VIDEO_BASE = "/home/cvlabgodzilla/Desktop/908_nas_2/113-Student/F113151105/手術室/data_video/test_video"
-VIDEO_DIR = TEST_VIDEO_BASE
-VIDEO_DIRS = sorted([
-    os.path.join(TEST_VIDEO_BASE, d)
-    for d in os.listdir(TEST_VIDEO_BASE)
-    if os.path.isdir(os.path.join(TEST_VIDEO_BASE, d))
-])
-CSV_OUTPUT = os.path.join(BASE_DIR, "outputs", "surgery_report.csv") # 
+BASE_DIR = os.environ.get("SURGERY_BASE_DIR", "/home/cvlabgodzilla/Desktop/Sugery")
+OUTPUT_BASE_DIR = os.environ.get(
+    "SURGERY_OUTPUT_BASE_DIR",
+    "/home/cvlabgodzilla/Desktop/908_nas_2/113-Student/F113151105/手術室/Sugery/test-result",
+)
+TEST_VIDEO_BASE = os.environ.get(
+    "SURGERY_TEST_VIDEO_BASE",
+    "/home/cvlabgodzilla/Desktop/908_nas_2/113-Student/F113151105/手術室/data_video/mask_video_202401",
+)
+# 指定資料集資料夾名稱；設為 None 時跑 TEST_VIDEO_BASE 下全部資料集
+# 可填單一字串: "20231228"，或多個: ["20231228", "20231226"]
+TARGET_DATASETS = None
+
+if TARGET_DATASETS is None:
+    VIDEO_DIRS = sorted([
+        os.path.join(TEST_VIDEO_BASE, d)
+        for d in os.listdir(TEST_VIDEO_BASE)
+        if os.path.isdir(os.path.join(TEST_VIDEO_BASE, d))
+    ])
+elif isinstance(TARGET_DATASETS, str):
+    VIDEO_DIRS = [os.path.join(TEST_VIDEO_BASE, TARGET_DATASETS)]
+else:
+    VIDEO_DIRS = [os.path.join(TEST_VIDEO_BASE, d) for d in TARGET_DATASETS]
+VIDEO_DIR = VIDEO_DIRS[0] if VIDEO_DIRS else TEST_VIDEO_BASE
+CSV_OUTPUT = os.path.join(OUTPUT_BASE_DIR, "surgery_report.csv") # 
 MODEL_PATH = os.path.join(BASE_DIR, "models", "Qwen3-VL-8B-Instruct-FP8")
 
 # 任務與攝影機設定
@@ -57,8 +73,8 @@ CROP_REGION = CROP_SETTING.get(ROOM, None)
 # 在 CROP_REGION 裁切後的門口畫面上做 ROI 加權差異。
 DOOR_STAGE1_USE_OPENCV = True
 DOOR_STAGE1_CLOSED_TEMPLATE = os.path.join(BASE_DIR, "templates", f"door_closed_{ROOM}.jpg")
-DOOR_STAGE1_DIFF_THRESHOLD = 20.0       # 加權平均 absdiff 分數門檻（略提高，降低關門人員經過誤判）
-DOOR_STAGE1_CHANGED_RATIO = 0.040       # 變動像素比例門檻（略提高，降低局部遮擋誤判）
+DOOR_STAGE1_DIFF_THRESHOLD = 25.0       # 加權平均 absdiff 分數門檻
+DOOR_STAGE1_CHANGED_RATIO = 0.04    # 變動像素比例門檻（略提高，降低局部遮擋誤判）
 DOOR_STAGE1_PIXEL_DIFF_THRESHOLD = 25   # 單像素視為變動的 absdiff 門檻
 DOOR_STAGE1_BG_ALPHA = 0.03             # 門未開時背景 EMA 更新速度
 DOOR_STAGE1_ROI_WEIGHTS = {
@@ -66,9 +82,9 @@ DOOR_STAGE1_ROI_WEIGHTS = {
     # A8：三段 ROI（上/中/下），其中中間固定為 x=0~170, y=50~100（裁切圖座標）。
     # 裁切後畫面尺寸約 280x260px (x:400~680, y:0~260)
     "A8": [
-        (0.00, 0.000, 0.708, 0.192, 1.0),  # 上方：x=0~170, y=0~49（中間範圍外）
-        (0.00, 0.192, 0.708, 0.385, 3.0),  # 中間：x=0~170, y=50~100（高權重）
-        (0.00, 0.388, 0.708, 0.962, 1.0),  # 下方：x=0~170, y=101~250（中間範圍外）
+        (0.058, 0.573, 0.479, 0.877, 0.5),  # x=14~115, y=149~228
+        (0.254, 0.319, 0.688, 0.550, 2.0),  # x=61~165, y=83~143
+        (0.087, 0.058, 0.487, 0.308, 3.0),  # x=21~117, y=15~80
     ],
     "A9": [
         (0.00, 0.00, 1.00, 1.00, 1.0),
@@ -107,6 +123,9 @@ EVENT_COOLDOWN_FRAMES = { # 事件冷卻時間 (幀數)
 # 連續 N 幀都偄測到開門，才確認狀態轉换（防抖動誤判）
 DOOR_OPEN_CONFIRM_FRAMES  = 20  # 門開確認需經過的幀數
 DOOR_CLOSE_CONFIRM_FRAMES = 15  # 門關確認需經過的幀數
+DOOR_EVENT_MATCH_BEFORE_FRAMES = 300  # ENT/SEND 事件前 N 幀內有 Door OPEN 即成立
+DOOR_EVENT_MATCH_AFTER_FRAMES = 300   # ENT/SEND 事件後 N 幀內有 Door OPEN 即成立
+DOOR_LOOKBACK_FRAMES = DOOR_EVENT_MATCH_BEFORE_FRAMES + 1000  # Door 狀態保留幀數（含事件確認延遲）
 
 # Surgery SEND 穩定性判斷參數
 # 在觀察窗內（send_confirm_threshold 幀）中：

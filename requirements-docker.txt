@@ -5,3 +5,5 @@ opencv-python
 numpy
 Pillow
 tiktoken
+fastapi
+uvicorn
