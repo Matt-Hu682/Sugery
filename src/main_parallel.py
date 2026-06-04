@@ -306,13 +306,19 @@ def main():
             delta += 24 * 3600
         return delta
 
-    def _door_open_near(real_time_str: str) -> bool:
-        """事件前 N 幀與後 N 幀內只要有 Door OPEN，就視為可通過。"""
+    def _door_open_for_event(event_type: str, real_time_str: str) -> bool:
+        """
+        依事件方向查詢 Door OPEN：
+            ENT  看事件前 1 分鐘內是否有 Door OPEN
+            SEND 看事件後 1 分鐘內是否有 Door OPEN
+        """
         target_sec = _hms_to_seconds(real_time_str)
         if target_sec is None:
             return door_state["door_open"]
         before_sec = DOOR_EVENT_MATCH_BEFORE_FRAMES * STRIDE_SEC
         after_sec = DOOR_EVENT_MATCH_AFTER_FRAMES * STRIDE_SEC
+        event_type = (event_type or "").upper()
+
         for ts_str, is_open in door_open_window:
             if not is_open:
                 continue
@@ -320,7 +326,9 @@ def main():
             if ts_sec is None:
                 continue
             delta = _seconds_delta(ts_sec, target_sec)
-            if -before_sec <= delta <= after_sec:
+            if event_type == "ENT" and -before_sec <= delta <= 0:
+                return True
+            if event_type == "SEND" and 0 <= delta <= after_sec:
                 return True
         return False
 
@@ -349,11 +357,10 @@ def main():
                 continue
         return "OPEN" if best[1] else "CLOSE"
 
-    def _door_timeline_ready(real_time_str: str) -> bool:
+    def _door_timeline_ready(event_type: str, real_time_str: str) -> bool:
         """
         即時處理用 buffer 判斷。
-        Door/Surgery 影片起始時間可能不同，因此 Surgery 事件要等 Door 時間軸
-        至少跑到「事件 real_time + BUFFER_SECONDS」後再判斷門狀態。
+        ENT 只需要 Door 時間軸至少追到事件時間；SEND 需要等待事件後 1 分鐘。
         """
         if not door_open_window:
             return False
@@ -361,7 +368,14 @@ def main():
         latest_door_sec = _hms_to_seconds(door_open_window[-1][0])
         if target_sec is None or latest_door_sec is None:
             return True
-        return _seconds_delta(latest_door_sec, target_sec) >= BUFFER_SECONDS
+        event_type = (event_type or "").upper()
+        if event_type == "ENT":
+            wait_sec = 0
+        elif event_type == "SEND":
+            wait_sec = DOOR_EVENT_MATCH_AFTER_FRAMES * STRIDE_SEC
+        else:
+            wait_sec = BUFFER_SECONDS
+        return _seconds_delta(latest_door_sec, target_sec) >= wait_sec
 
     def _next_date_tag(date_tag: str) -> str:
         try:
@@ -550,7 +564,7 @@ def main():
         remain_evts = []
         for evt in pending_surgery_events:
             evt_real_time = evt.get("real_time", "")
-            if force or _door_timeline_ready(evt_real_time):
+            if force or _door_timeline_ready(evt.get("event_type", ""), evt_real_time):
                 ready_evts.append(evt)
             else:
                 remain_evts.append(evt)
@@ -568,7 +582,7 @@ def main():
             ])
             for evt in ready_evts:
                 evt_real_time = evt.get("real_time", "")
-                door_status = "OPEN" if _door_open_near(evt_real_time) else "CLOSE"
+                door_status = "OPEN" if _door_open_for_event(evt.get("event_type", ""), evt_real_time) else "CLOSE"
                 writer.writerow({
                     "source": "surgery",
                     "event_type": evt.get("event_type", ""),
@@ -606,7 +620,7 @@ def main():
         for evt in rejected_evts:
             log_event(
                 f"[Surgery 誤判濾除] {evt.get('event_type','?')} "
-                f"影片時間:{evt.get('video_time','?')} — 事件前後 Door 未開啟，彈出不計入"
+                f"影片時間:{evt.get('video_time','?')} — 事件指定方向時間窗內 Door 未開啟，彈出不計入"
             )
 
         pending_surgery_events = remain_evts
@@ -632,7 +646,7 @@ def main():
         _all = pipeline.get_all_events()
         if len(_all) > last_stored_all_count:
             _new = _all[last_stored_all_count:]
-            # 每個事件個別查詢前後時間窗內是否有 Door OPEN，與主迴圈 _door_open_near 邏輯一致
+            # 每個事件個別查詢指定方向時間窗內是否有 Door OPEN，與主迴圈 _door_open_for_event 邏輯一致
             _result_rows_d = []
             with open(path_unified, "a", newline="", encoding="utf-8-sig") as f:
                 _w = csv.DictWriter(f, fieldnames=[
@@ -641,7 +655,7 @@ def main():
                 ])
                 for _evt in _new:
                     _rt = _evt.get("real_time", "")
-                    _door_status = "OPEN" if _door_open_near(_rt) else "CLOSE"
+                    _door_status = "OPEN" if _door_open_for_event(_evt.get("event_type", ""), _rt) else "CLOSE"
                     _w.writerow({
                         "source": "surgery",
                         "event_type": _evt.get("event_type", ""),
