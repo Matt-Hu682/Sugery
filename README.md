@@ -338,7 +338,11 @@ PatientStatusAnalyzer
 
 ### `src/realtime_pipeline.py`
 
-把逐幀 VLM status 轉換成事件的狀態機。
+`RealtimePipeline` 對外 API 的相容入口。主程式仍然使用：
+
+```python
+from realtime_pipeline import RealtimePipeline
+```
 
 在 `main_parallel.py` 中以 Surgery 模式建立：
 
@@ -351,6 +355,12 @@ RealtimePipeline(
     task_type="Surgery",
 )
 ```
+
+`RealtimePipeline` 本身保留初始化、逐幀推入、狀態查詢與事件摘要；細部狀態機已拆到 `src/pipeline/`：
+
+- `src/pipeline/voting.py`: 延遲投票、flush、依 task type 分派事件偵測。
+- `src/pipeline/surgery_state_machine.py`: Surgery `ENT` / `SEND` 狀態機與尾端 SEND 補發。
+- `src/pipeline/door_state_machine.py`: Door `ENT` / `SEND` 狀態機與 Door 直接確認事件。
 
 功能：
 
