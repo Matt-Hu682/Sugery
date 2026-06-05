@@ -1,208 +1,178 @@
 # test_system.py
-# 測試系統完整性和功能
+# 測試目前 main_parallel 主流程的基本環境完整性
 
+import os
 import subprocess
 import sys
-import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 
+
 def test_ffmpeg():
-    """測試 ffmpeg 是否安裝"""
-    print("\n📺 測試 ffmpeg...")
+    """測試 ffmpeg 是否安裝。"""
+    print("\n測試 ffmpeg...")
     try:
-        result = subprocess.run(['ffmpeg', '-version'], 
-                              stdout=subprocess.PIPE, 
-                              stderr=subprocess.PIPE, 
-                              timeout=5)
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
         if result.returncode == 0:
-            version_line = result.stdout.decode().split('\n')[0]
-            print(f"   ✅ {version_line}")
+            version_line = result.stdout.decode(errors="ignore").split("\n")[0]
+            print(f"   OK {version_line}")
             return True
-        else:
-            print("   ❌ ffmpeg 無法執行")
-            return False
-    except FileNotFoundError:
-        print("   ❌ ffmpeg 未安裝")
+        print("   NO ffmpeg 無法執行")
         return False
-    except Exception as e:
-        print(f"   ❌ 錯誤: {e}")
+    except FileNotFoundError:
+        print("   NO ffmpeg 未安裝")
+        return False
+    except Exception as exc:
+        print(f"   NO 錯誤: {exc}")
         return False
 
 
 def test_config():
-    """測試配置載入"""
-    print("\n⚙️  測試配置載入...")
+    """測試目前主流程設定載入。"""
+    print("\n測試 config.py...")
     try:
         sys.path.insert(0, str(SRC_DIR))
-        from batch_runner.config import (
-            _detected_dates, PROCESS_DATES, TEST_DATE,
-            CURRENT_TEST, ROOM, TARGET_CAMERAS,
-            DATA_BASE_DIR, OUTPUTS_DIR,
-            CROP_REGION, STABLE_FRAME,
-            get_csv_output_for_date, get_gpu_for_date
+        from config import (  # noqa: E402
+            CSV_OUTPUT,
+            OUTPUT_BASE_DIR,
+            ROOM,
+            STRIDE_SEC,
+            TARGET_CAMERAS,
+            TEST_VIDEO_BASE,
+            VIDEO_DIRS,
         )
-        print(f"   ✅ 配置載入成功")
-        print(f"      日期數: {len(_detected_dates)}")
-        print(f"      任務: {CURRENT_TEST} | 手術室: {ROOM}")
-        print(f"      資料源: {DATA_BASE_DIR}")
+        print("   OK config 載入成功")
+        print(f"      ROOM: {ROOM}")
+        print(f"      TARGET_CAMERAS: {TARGET_CAMERAS}")
+        print(f"      STRIDE_SEC: {STRIDE_SEC}")
+        print(f"      TEST_VIDEO_BASE: {TEST_VIDEO_BASE}")
+        print(f"      VIDEO_DIRS: {len(VIDEO_DIRS)}")
+        print(f"      OUTPUT_BASE_DIR: {OUTPUT_BASE_DIR}")
+        print(f"      CSV_OUTPUT: {CSV_OUTPUT}")
         return True
-    except Exception as e:
-        print(f"   ❌ 配置載入失敗: {e}")
+    except Exception as exc:
+        print(f"   NO config 載入失敗: {exc}")
         return False
 
 
 def test_modules():
-    """測試核心模組"""
-    print("\n📦 測試核心模組...")
+    """測試核心模組可載入。"""
+    print("\n測試核心模組...")
     modules = [
-        ('torch', 'PyTorch'),
-        ('cv2', 'OpenCV'),
-        ('PIL', 'Pillow'),
+        ("cv2", "OpenCV"),
+        ("PIL", "Pillow"),
     ]
-    
+
     all_ok = True
     for module_name, display_name in modules:
         try:
             __import__(module_name)
-            print(f"   ✅ {display_name}")
+            print(f"   OK {display_name}")
         except ImportError:
-            print(f"   ❌ {display_name} 未安裝")
+            print(f"   NO {display_name} 未安裝")
             all_ok = False
-    
+
     try:
         sys.path.insert(0, str(SRC_DIR))
-        from realtime_pipeline import RealtimePipeline
-        print(f"   ✅ RealtimePipeline")
-    except Exception as e:
-        print(f"   ❌ RealtimePipeline 載入失敗: {e}")
+        from realtime_pipeline import RealtimePipeline  # noqa: F401,E402
+        from door_stage1 import DoorStage1  # noqa: F401,E402
+        print("   OK RealtimePipeline")
+        print("   OK DoorStage1")
+    except Exception as exc:
+        print(f"   NO 專案模組載入失敗: {exc}")
         all_ok = False
-    
+
     return all_ok
 
 
-def test_processor():
-    """測試處理器載入"""
-    print("\n🔧 測試處理器...")
-    try:
-        sys.path.insert(0, str(SRC_DIR))
-        from batch_runner.processor import process_dates_on_gpus, generate_report_and_clip_videos
-        print(f"   ✅ 處理器載入成功")
-        return True
-    except Exception as e:
-        print(f"   ❌ 處理器載入失敗: {e}")
+def test_main_entrypoint():
+    """確認目前主入口存在，避免 import 時載入大型模型。"""
+    print("\n測試主入口...")
+    entrypoint = SRC_DIR / "main_parallel.py"
+    if not entrypoint.exists():
+        print(f"   NO 找不到 {entrypoint}")
         return False
-
-
-def test_gpu():
-    """測試 GPU 可用性"""
-    print("\n🎮 測試 GPU...")
-    try:
-        import torch
-        if torch.cuda.is_available():
-            count = torch.cuda.device_count()
-            print(f"   ✅ {count} 張 GPU 可用")
-            for i in range(count):
-                print(f"      GPU{i}: {torch.cuda.get_device_name(i)}")
-            return True
-        else:
-            print("   ⚠️  CUDA 不可用（可能使用 CPU）")
-            return False
-    except Exception as e:
-        print(f"   ❌ GPU 檢測失敗: {e}")
-        return False
+    text = entrypoint.read_text(encoding="utf-8")
+    ok = "def main():" in text and "if __name__ ==" in text
+    print(f"   {'OK' if ok else 'NO'} {entrypoint}")
+    return ok
 
 
 def test_video_sample():
-    """測試影片緩衝操作"""
-    print("\n🎬 測試影片操作...")
+    """測試影片寫入與 ffmpeg 剪輯。"""
+    print("\n測試影片操作...")
     try:
         import cv2
         import numpy as np
-        
-        # 建立測試影片（虛擬）
+
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         test_video = "/tmp/test_video.mp4"
-        
-        out = cv2.VideoWriter(test_video, cv2.VideoWriter_fourcc(*'mp4v'), 
-                            30, (640, 480))
+        test_output = "/tmp/test_clip.mp4"
+
+        out = cv2.VideoWriter(test_video, cv2.VideoWriter_fourcc(*"mp4v"), 30, (640, 480))
         for _ in range(30):
             out.write(frame)
         out.release()
-        
-        # 測試 ffmpeg 剪輯
-        test_output = "/tmp/test_clip.mp4"
-        cmd = [
-            'ffmpeg', '-y',
-            '-ss', '0',
-            '-i', test_video,
-            '-t', '1',
-            '-c', 'copy',
-            test_output
-        ]
-        
-        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, 
-                              stderr=subprocess.DEVNULL, timeout=10)
-        
+
+        cmd = ["ffmpeg", "-y", "-ss", "0", "-i", test_video, "-t", "1", "-c", "copy", test_output]
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+
         if result.returncode == 0:
-            print(f"   ✅ 影片剪輯測試成功")
-            os.remove(test_video)
-            os.remove(test_output)
+            print("   OK 影片剪輯測試成功")
+            for path in (test_video, test_output):
+                if os.path.exists(path):
+                    os.remove(path)
             return True
-        else:
-            print(f"   ❌ 影片剪輯測試失敗")
-            return False
-    except Exception as e:
-        print(f"   ❌ 影片操作測試失敗: {e}")
+        print("   NO 影片剪輯測試失敗")
+        return False
+    except Exception as exc:
+        print(f"   NO 影片操作測試失敗: {exc}")
         return False
 
 
 def main():
     print("=" * 70)
-    print("🔍 系統完整性測試 - 方案 B（CSV + 事件檢測 + 影片剪輯）")
+    print("系統完整性測試 - main_parallel 主流程")
     print("=" * 70)
-    
+
     tests = [
         ("ffmpeg", test_ffmpeg),
         ("配置", test_config),
         ("模組", test_modules),
-        ("處理器", test_processor),
-        ("GPU", test_gpu),
+        ("主入口", test_main_entrypoint),
         ("影片操作", test_video_sample),
     ]
-    
+
     results = []
     for name, test_func in tests:
         try:
-            result = test_func()
-            results.append((name, result))
-        except Exception as e:
-            print(f"\n❌ 測試 {name} 發生異常: {e}")
+            results.append((name, test_func()))
+        except Exception as exc:
+            print(f"\nNO 測試 {name} 發生異常: {exc}")
             results.append((name, False))
-    
-    # 匯總
+
     print("\n" + "=" * 70)
-    print("📊 測試結果匯總")
+    print("測試結果匯總")
     print("=" * 70)
-    
-    passed = sum(1 for _, r in results if r)
+
+    passed = sum(1 for _, result in results if result)
     total = len(results)
-    
     for name, result in results:
-        status = "✅" if result else "❌"
-        print(f"{status} {name}")
-    
+        print(f"{'OK' if result else 'NO'} {name}")
+
     print(f"\n總計: {passed}/{total} 通過")
-    
     if passed == total:
-        print("\n🎉 所有測試通過！系統已準備好執行方案 B")
-        print("執行: python3 -m batch_runner.processor")
+        print("\n所有基本檢查通過。主流程指令: PYTHONPATH=src python3 src/main_parallel.py")
         return 0
-    else:
-        print(f"\n⚠️  有 {total - passed} 項測試失敗，請檢查上述問題")
-        return 1
+    print(f"\n有 {total - passed} 項測試失敗，請檢查上述問題")
+    return 1
 
 
 if __name__ == "__main__":

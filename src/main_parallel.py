@@ -11,11 +11,12 @@
 import csv
 import os
 import sys
-import threading
 import time
 import warnings
 from collections import deque
 from datetime import datetime, timedelta
+from itertools import groupby
+
 from core import PatientStatusAnalyzer
 from realtime_pipeline import RealtimePipeline
 
@@ -27,230 +28,27 @@ SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from config import (
-    BASE_DIR,
-    CAMERA_SETTING,
-    CROP_REGION,
-    CSV_OUTPUT,
-    DOOR_CLOSE_CONFIRM_FRAMES,
-    DOOR_EVENT_MATCH_AFTER_FRAMES,
-    DOOR_EVENT_MATCH_BEFORE_FRAMES,
-    DOOR_OPEN_CONFIRM_FRAMES,
-    DOOR_LOOKBACK_FRAMES,
-    OR_SETTING,
-    OUTPUT_BASE_DIR,
-    ROOM,
-    STRIDE_SEC,
-    VIDEO_DIR,
-    VIDEO_DIRS,
-)
+from config import CROP_REGION, DOOR_LOOKBACK_FRAMES, OUTPUT_BASE_DIR, STRIDE_SEC
 from door_stage1 import DoorStage1
+from pipeline.door_state import door_detect_step, door_open_for_event, door_timeline_ready
+from pipeline.event_clipper import RoomEventClipper
+from pipeline.event_utils import event_sort_key, hms_to_seconds, next_date_tag, sort_unified_csv
 from live_monitor import LiveMonitorWriter
+from monitoring.terminal_ui import log_event, update_ui
 from utils import video_start_time
-import datetime as _dt
+from pipeline.video_outputs import (
+    collect_videos,
+    get_dataset_name,
+    get_surgery_date,
+    prepare_surgery_outputs,
+)
 
 
 # gpu設定
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-# 執行緒鎖
-term_lock = threading.Lock()
-term_state = {"door": "等待影片...", "surgery": "等待模型載入..."}
 BUFFER_SECONDS = 10
 print("\n")
-
-
-def _redraw_ui():
-    sys.stdout.write(f"\r\033[2K  [Door 視角]    {term_state['door']}\n")
-    sys.stdout.write(f"\r\033[2K  [Surgery 視角] {term_state['surgery']}\033[1A")
-    sys.stdout.flush() #用flush即時更新(因為標準輸出是buufer)。
-
-# 更新 Door / Surgery 的狀態列
-def update_ui(worker, text):
-    with term_lock:
-        term_state[worker] = text
-        _redraw_ui()
-
-
-# 寫入手術事件(log_event)在終端機，並更新ui。
-def log_event(text):
-    with term_lock:
-        sys.stdout.write("\r\033[2K\n\r\033[2K\033[1A")
-        sys.stdout.write(f"{text}\n\n\033[1A")
-        _redraw_ui()
-
-    
-def collect_videos(cam_type: str) -> list[str]:
-    """
-    根據攝影機類型，door / surgery，去影片資料夾找出符合的影片。
-    回傳形態:['.../s01/s01-....mp4',...
-    A8:
-        door:s01
-        surgery:s02
-    """
-    
-    cams = [cam for cam in OR_SETTING[ROOM] if CAMERA_SETTING.get(cam) == cam_type]
-    dirs = [os.path.abspath(p) for p in (VIDEO_DIRS if VIDEO_DIRS else [VIDEO_DIR])] #如果有設定多個資料夾，就有，否則單一資料夾[]
-    videos = [] # 找到的影片放這裡
-    for d in dirs:
-        if not os.path.isdir(d):
-            continue
-        for fname in sorted(os.listdir(d)):
-            if fname.lower().endswith((".mp4", ".avi")) and any(cam in fname for cam in cams):
-                videos.append(os.path.join(d, fname))
-    return sorted(videos)
-
-
-def _get_dataset_name(video_path: str) -> str:
-    """
-    從「資料夾名稱」取得資料集 ID。
-    來源：路徑的上一層資料夾名稱（非檔名）。
-    例如: .../20231211/S01-20231211-072847-xxx.mp4 -> "20231211"
-
-    注意：與 _get_surgery_date 的差異
-        - 本函式讀的是「資料夾」，適合用來分辨不同天的資料集。
-        - _get_surgery_date 讀的是「檔名第 2 段」，兩者通常相同，
-        但若影片放在命名不同的資料夾下就會不一致。
-    """
-    return os.path.basename(os.path.dirname(video_path))
-
-
-def _get_surgery_date(video_path: str) -> str:
-    """
-    從「檔名第 2 段」取得日期標籤，作為 CSV 的 Surgery_Date 欄位值。
-    來源：檔名（非資料夾），格式 S01-YYYYMMDD-HHMMSS-xxx.mp4。
-    例如: S01-20231211-072847-xxx.mp4 -> "20231211"
-
-    注意：與 _get_dataset_name 的差異
-        - 本函式讀的是「檔名」，適合作為輸出 CSV 的日期標籤。
-        - _get_dataset_name 讀的是「資料夾名稱」，兩者通常相同。
-    失敗時 fallback 至 _get_dataset_name（資料夾名稱）。
-    """
-    try:
-        return os.path.basename(video_path).split("-")[1]
-    except Exception:
-        return _get_dataset_name(video_path)
-
-    
-def _prepare_surgery_outputs(run_date: str, room_video_path: str):
-    """
-    # 整個手術時間點的輸出的 CSV 檔案路徑
-    """
-    dataset_name = _get_dataset_name(room_video_path) #得到資料集名稱 (20231211)
-    surgery_date = _get_surgery_date(room_video_path) #得到手術日期 (s01)
-    room_cams = [cam for cam in OR_SETTING[ROOM] if CAMERA_SETTING.get(cam) == "Room"] #得到攝影機標籤
-    cam_label = room_cams[0] if room_cams else "unknown"
-    
-    # 這個csv是產生過程中的原始手術資料
-    raw_csv_path = os.path.join(
-        os.path.dirname(CSV_OUTPUT), 
-        dataset_name,
-        f"surgery_report_Surgery_{dataset_name}_{run_date}_parallel.csv",
-    )
-    os.makedirs(os.path.dirname(raw_csv_path), exist_ok=True)
-
-    
-    report_dir = os.path.join(os.path.dirname(raw_csv_path), "result", ROOM) # 結果報告 分A8 與 A9
-    os.makedirs(report_dir, exist_ok=True)
-    pair_report_path = os.path.join(report_dir, f"Realtime_Events_Surgery_{dataset_name}_{run_date}.csv") # 最終報告
-
-    #整個對於所有事件的偵測(包含有錯誤的情況)
-    unified_events_dir = os.path.join(os.path.dirname(raw_csv_path), "all_events")
-    os.makedirs(unified_events_dir, exist_ok=True)
-    unified_events_path = os.path.join(unified_events_dir, f"Unified_Events_{dataset_name}_{run_date}.csv")
-
-    return raw_csv_path, pair_report_path, unified_events_path #回傳原始手術資料，最終報告，所有事件
-
-
-def _hms_to_seconds(value: str) -> int | None:
-    """
-    把影片時間從 "HH:MM:SS" 轉換成秒數，若失敗回傳 None。
-    """
-
-    try:
-        h, m, s = (int(part) for part in value.split(":"))
-        return h * 3600 + m * 60 + s
-    except Exception:
-        return None
-    
-
-
-def _event_sort_key(row: dict) -> tuple[int, int, int]:
-    """
-    根據事件的video做排序
-    先從row拿出video_time(轉成秒數)與video_name。
-    """
-    video_time_sec = _hms_to_seconds(row.get("video_time", ""))
-    video_name = row.get("video_name", "")
-
-    # 檔名格式通常為 S01-YYYYMMDD-HHMMSS-1702250927.mp4。
-    # 優先使用可讀的日期 + 起始時間；最後一段 timestamp 只作備援。
-    try:
-        base = os.path.splitext(os.path.basename(video_name))[0]
-        parts = base.split("-")
-        start_dt = datetime.strptime(f"{parts[1]}{parts[2]}", "%Y%m%d%H%M%S")
-        if video_time_sec is not None:
-            source_order = 0 if row.get("source") == "door" else 1
-            return (int(start_dt.timestamp()) + video_time_sec, source_order, 0)
-    except Exception:
-        pass
-
-    return (0, 0, 3)
-
-
-def _sort_csv(path: str, sort_key):
-    """
-    讀取 CSV、依指定規則排序，再寫回同一個檔案。
-    """
-    if not os.path.exists(path):
-        return
-    
-    with open(path, "r", newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f) #讀取csv檔案，並將每一行轉換成字典形式
-        fieldnames = reader.fieldnames or []
-        rows = list(reader)
-
-    if not fieldnames: #沒有欄位名稱 end
-        return
-
-    #排序
-    rows.sort(key=sort_key)
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-
-def _sort_unified_csv(path: str):
-    """
-    實際排序 unified csv 裡的事件，確保門口事件與手術事件按照真實時間順序排列。
-    """
-    _sort_csv(path, _event_sort_key)
-
-
-#開門偵測步驟
-def _door_detect_step(detector, frame_bgr, state):
-    raw_open = detector.detect(frame_bgr)
-    if not state["door_open"]: #門沒開
-        if raw_open: #偵測到開門
-            state["open_confirm_count"] += 1 
-            state["close_confirm_count"] = 0
-            if state["open_confirm_count"] >= DOOR_OPEN_CONFIRM_FRAMES: # 開門數到20幀
-                state["door_open"] = True
-                state["open_confirm_count"] = 0
-        else:
-            state["open_confirm_count"] = 0
-    else:
-        if not raw_open:#偵測到沒開門
-            state["close_confirm_count"] += 1
-            if state["close_confirm_count"] >= DOOR_CLOSE_CONFIRM_FRAMES: # 關門屬到15幀
-                state["door_open"] = False
-                state["close_confirm_count"] = 0
-        else:
-            state["close_confirm_count"] = 0
-    return raw_open
-
 
 def main():
     print("=" * 70)
@@ -298,91 +96,21 @@ def main():
     door_open_window: deque = deque(maxlen=DOOR_LOOKBACK_FRAMES)  # (real_time_str, bool)
     pending_surgery_events: list[dict] = []
 
-    def _seconds_delta(ts_sec: int, target_sec: int) -> int:
-        delta = ts_sec - target_sec
-        if delta > 12 * 3600:
-            delta -= 24 * 3600
-        elif delta < -12 * 3600:
-            delta += 24 * 3600
-        return delta
-
     def _door_open_for_event(event_type: str, real_time_str: str) -> bool:
-        """
-        依事件方向查詢 Door OPEN：
-            ENT  看事件前 1 分鐘內是否有 Door OPEN
-            SEND 看事件後 1 分鐘內是否有 Door OPEN
-        """
-        target_sec = _hms_to_seconds(real_time_str)
-        if target_sec is None:
-            return door_state["door_open"]
-        before_sec = DOOR_EVENT_MATCH_BEFORE_FRAMES * STRIDE_SEC
-        after_sec = DOOR_EVENT_MATCH_AFTER_FRAMES * STRIDE_SEC
-        event_type = (event_type or "").upper()
-
-        for ts_str, is_open in door_open_window:
-            if not is_open:
-                continue
-            ts_sec = _hms_to_seconds(ts_str)
-            if ts_sec is None:
-                continue
-            delta = _seconds_delta(ts_sec, target_sec)
-            if event_type == "ENT" and -before_sec <= delta <= 0:
-                return True
-            if event_type == "SEND" and 0 <= delta <= after_sec:
-                return True
-        return False
-
-    def _door_status_at(real_time_str: str) -> str:
-        """根據事件的 real_time，
-            從最近 3 分鐘的 door_open_window 裡，
-            找出事件發生當下的門狀態。。
-        ex : _door_status_at("15:20:10") 回傳 open 或 close
-        """
-        if not door_open_window:
-            return "OPEN" if door_state["door_open"] else "CLOSE"
-        try:
-            target = tuple(int(x) for x in real_time_str.split(":")) # 時間字串轉成 (h, m, s) tuple，方便比較大小 (15, 20, 10) <= (15, 21, 00)
-        except Exception:
-            return "OPEN" if door_open_window[-1][1] else "CLOSE" 
-        # 找最接近且 <= target 的那一筆
-        best = door_open_window[0] 
-        for ts_str, is_open in door_open_window:
-            try:
-                ts = tuple(int(x) for x in ts_str.split(":"))
-                if ts <= target: 
-                    best = (ts_str, is_open)
-                else:
-                    break  # deque 按時間遞增，超過就停
-            except Exception:
-                continue
-        return "OPEN" if best[1] else "CLOSE"
+        return door_open_for_event(
+            event_type,
+            real_time_str,
+            door_open_window,
+            door_state["door_open"],
+        )
 
     def _door_timeline_ready(event_type: str, real_time_str: str) -> bool:
-        """
-        即時處理用 buffer 判斷。
-        ENT 只需要 Door 時間軸至少追到事件時間；SEND 需要等待事件後 1 分鐘。
-        """
-        if not door_open_window:
-            return False
-        target_sec = _hms_to_seconds(real_time_str)
-        latest_door_sec = _hms_to_seconds(door_open_window[-1][0])
-        if target_sec is None or latest_door_sec is None:
-            return True
-        event_type = (event_type or "").upper()
-        if event_type == "ENT":
-            wait_sec = 0
-        elif event_type == "SEND":
-            wait_sec = DOOR_EVENT_MATCH_AFTER_FRAMES * STRIDE_SEC
-        else:
-            wait_sec = BUFFER_SECONDS
-        return _seconds_delta(latest_door_sec, target_sec) >= wait_sec
-
-    def _next_date_tag(date_tag: str) -> str:
-        try:
-            dt = datetime.strptime(date_tag, "%Y%m%d") + timedelta(days=1)
-            return dt.strftime("%Y%m%d")
-        except Exception:
-            return date_tag
+        return door_timeline_ready(
+            event_type,
+            real_time_str,
+            door_open_window,
+            BUFFER_SECONDS,
+        )
 
     def _result_row_from_event(evt: dict, surgery_date_tag: str) -> dict | None:
         """
@@ -393,7 +121,7 @@ def main():
 
         event_type = evt.get("event_type", "?")
         event_real_time = evt.get("real_time", "?")
-        event_time_sec = _hms_to_seconds(event_real_time)
+        event_time_sec = hms_to_seconds(event_real_time)
         row_date_tag = surgery_date_tag
         
         if event_type == "ENT":
@@ -412,7 +140,7 @@ def main():
                 and event_time_sec is not None
                 and event_time_sec < active_report_ent_time_sec
             ):
-                row_date_tag = _next_date_tag(row_date_tag)
+                row_date_tag = next_date_tag(row_date_tag)
         else:
             return None  # 其他事件類型不寫入 result CSV
 
@@ -432,117 +160,10 @@ def main():
         return row
 
     # ── 即時剪輯用：事先建立 Room 影片絕對時間戳記列表 ────────────────────
-    
-    PRE_POST_SEC = 90  # 前後各 1.5 分鐘（共 3 分鐘）
-
-    def _get_video_abs_ts(path):
-        """
-        從檔名解析影片的絕對開始時間 (Unix timestamp)。
-        格式：S02-20231222-153800-xxx.mp4
-            parts[1]=日期, parts[2]=時間 → 2023-12-22 15:38:00
-        """
-        try:
-            parts = os.path.basename(path).split("-")
-            dt = _dt.datetime.strptime(f"{parts[1]}{parts[2]}", "%Y%m%d%H%M%S")
-            return int(dt.timestamp())
-        except Exception:
-            return None
-
-    room_videos_by_dataset = {}
-    for vpath in sorted(collect_videos("Room")):
-        vts = _get_video_abs_ts(vpath)
-        if vts is not None:
-            # 預先計算 fps 與 duration，避免 clip_event 每次都重開影片
-            _cap_pre = cv2.VideoCapture(vpath)
-            _fps_pre = _cap_pre.get(cv2.CAP_PROP_FPS) or 5.0
-            _dur_pre = int(_cap_pre.get(cv2.CAP_PROP_FRAME_COUNT)) / _fps_pre
-            _cap_pre.release()
-            dataset_key = _get_dataset_name(vpath)
-            room_videos_by_dataset.setdefault(dataset_key, []).append({
-                "path": vpath, "ts": vts, "fps": _fps_pre, "dur": _dur_pre
-            })
-    for _videos in room_videos_by_dataset.values():
-        _videos.sort(key=lambda x: x["ts"])
+    clipper = RoomEventClipper(log_event, pre_post_sec=90)
 
     def clip_event(row: dict, video_output_dir: str, dataset_name: str):
-        """依 Real_Time 對同一 dataset 的 room 影片裁剪前後 PRE_POST_SEC 秒。"""
-        dataset_room_videos = room_videos_by_dataset.get(dataset_name, [])
-        if not dataset_room_videos:
-            log_event(f"  [剪輯略過] dataset={dataset_name} 找不到 Room 影片")
-            return
-        surgery_date_tag = row.get("Surgery_Date", "unknown")
-        sno    = str(row.get("Surgery_No", "?")).replace("/", "").replace("\\", "")
-        etype  = row.get("Type", "?")
-        rt_raw = row.get("Real_Time", "000000")
-        rt_str = rt_raw.replace(":", "")
-        dst_name = f"{surgery_date_tag}_{etype}_{sno}_{rt_str}.mp4"
-        dst_path = os.path.join(video_output_dir, dst_name)
-        if os.path.exists(dst_path):
-            return
-        try:
-            rh, rm, rs = map(int, rt_raw.split(":"))
-        except Exception:
-            return
-
-        
-        event_abs_ts = None
-        for v in dataset_room_videos:
-            vts = v["ts"]
-            dur_tmp = v["dur"]  # 使用預先計算的 duration，不需重開影片
-            try:
-                base_dt = _dt.datetime.fromtimestamp(vts)
-                cand_dt = base_dt.replace(hour=rh, minute=rm, second=rs)
-                if cand_dt < base_dt:  # 時間往回跳 -> 跨日
-                    cand_dt += _dt.timedelta(days=1)  # 加一天
-                cand = int(cand_dt.timestamp())
-                if vts <= cand <= vts + dur_tmp:
-                    event_abs_ts = cand
-                    break
-            except Exception:
-                continue
-        if event_abs_ts is None and dataset_room_videos:
-            try:
-                _fb_vts = dataset_room_videos[0]["ts"]
-                _fb_base = _dt.datetime.fromtimestamp(_fb_vts)
-                _fb_cand = _fb_base.replace(hour=rh, minute=rm, second=rs)
-                if _fb_cand < _fb_base:  # 跨日修正
-                    _fb_cand += _dt.timedelta(days=1)
-                event_abs_ts = int(_fb_cand.timestamp())
-            except Exception:
-                return
-        if event_abs_ts is None:
-            return
-        t_start = event_abs_ts - PRE_POST_SEC
-        t_end   = event_abs_ts + PRE_POST_SEC
-        try:
-            writer = None
-            for v in dataset_room_videos:
-                cap_c = cv2.VideoCapture(v["path"])
-                fps_c = v["fps"]  # 使用預先計算的 fps
-                dur_c = v["dur"]  # 使用預先計算的 duration
-                vs = v["ts"]; ve = vs + dur_c
-                if ve < t_start or vs > t_end:
-                    cap_c.release(); continue
-                if writer is None:
-                    os.makedirs(video_output_dir, exist_ok=True)
-                    writer = cv2.VideoWriter(
-                        dst_path, cv2.VideoWriter_fourcc(*"mp4v"), fps_c,
-                        (int(cap_c.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                        int(cap_c.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-                    )
-                cap_c.set(cv2.CAP_PROP_POS_FRAMES, int(max(0.0, t_start - vs) * fps_c))
-                limit = int(min(dur_c, t_end - vs) * fps_c)
-                while cap_c.isOpened():
-                    ret_c, frm_c = cap_c.read()
-                    if not ret_c or cap_c.get(cv2.CAP_PROP_POS_FRAMES) > limit:
-                        break
-                    writer.write(frm_c)
-                cap_c.release()
-            if writer:
-                writer.release()
-                log_event(f"  [剪輯完成] {dst_name}")
-        except Exception as e:
-            log_event(f"  [剪輯失敗] {dst_name} ({e})")
+        clipper.clip_event(row, video_output_dir, dataset_name)
 
     def _process_pending_surgery_events(
         path_unified: str,
@@ -559,7 +180,7 @@ def main():
         if not pending_surgery_events:
             return
 
-        pending_surgery_events.sort(key=_event_sort_key)
+        pending_surgery_events.sort(key=event_sort_key)
         ready_evts = []
         remain_evts = []
         for evt in pending_surgery_events:
@@ -604,7 +225,7 @@ def main():
                     else:
                         rejected_evts.append(evt)
 
-        _sort_unified_csv(path_unified)
+        sort_unified_csv(path_unified)
         if result_rows:
             with open(path_report, "a", newline="", encoding="utf-8-sig") as f:
                 csv.DictWriter(f, fieldnames=[
@@ -628,10 +249,8 @@ def main():
     # ── 依 dataset_name 分群，同一資料集跑完才 flush + reset ──────────────
     # 好處：同一天的影片（包含跨夜手術）在同一個 pipeline 內連續處理；
     #       不同天之間才 flush + reset，確保事件不跨資料集汙染。
-    from itertools import groupby
-
     pairs = list(zip(door_videos[:pair_count], room_videos[:pair_count]))
-    grouped = groupby(pairs, key=lambda p: _get_dataset_name(p[1]))
+    grouped = groupby(pairs, key=lambda p: get_dataset_name(p[1]))
     dataset_groups = [(ds, list(ps)) for ds, ps in grouped]
 
     global_pair_idx = 0
@@ -668,7 +287,7 @@ def main():
                         _row = _result_row_from_event(_evt, date_tag)
                         if _row is not None:
                             _result_rows_d.append(_row)
-            _sort_unified_csv(path_unified)
+            sort_unified_csv(path_unified)
             if _result_rows_d:
                 with open(path_report, "a", newline="", encoding="utf-8-sig") as f:
                     csv.DictWriter(f, fieldnames=[
@@ -702,7 +321,7 @@ def main():
                 f"Door={os.path.basename(door_video)} | Room={os.path.basename(room_video)}"
             )
 
-            raw_csv_path, pair_report_path, unified_events_path = _prepare_surgery_outputs(run_date, room_video)
+            raw_csv_path, pair_report_path, unified_events_path = prepare_surgery_outputs(run_date, room_video)
 
             # 統一事件 CSV （對每個 dataset 只建一次 header）
             if unified_events_path not in unified_event_paths:
@@ -782,7 +401,7 @@ def main():
                 else:
                     door_analysis = door_frame
                 prev_door_open = door_state["door_open"]
-                raw_open = _door_detect_step(detector, door_analysis, door_state)  #偵測開門
+                raw_open = door_detect_step(detector, door_analysis, door_state)  #偵測開門
                 now_door_open = door_state["door_open"]
 
                 if now_door_open != prev_door_open:
@@ -799,7 +418,7 @@ def main():
                             "video_name": os.path.basename(door_video),
                             "door_status": "OPEN" if now_door_open else "CLOSE",
                         })
-                    _sort_unified_csv(unified_events_path)
+                    sort_unified_csv(unified_events_path)
                     log_event(f"  [Door] {'OPEN' if now_door_open else 'CLOSE'} @ {door_video_time_str}")
                     # 開門轉態時記錄開門時間標籤；關門時清除
                     if now_door_open:
@@ -860,7 +479,7 @@ def main():
                     room_frame=room_frame,
                     status={
                         "dataset": dataset_name,
-                        "surgery_date": _get_surgery_date(room_video),
+                        "surgery_date": get_surgery_date(room_video),
                         "door_video": os.path.basename(door_video),
                         "room_video": os.path.basename(room_video),
                         "door_video_time": door_video_time_str,
@@ -899,7 +518,7 @@ def main():
                 all_detected = pipeline.get_all_events()
                 if len(all_detected) > last_stored_all_count:
                     new_evts = all_detected[last_stored_all_count:]
-                    surgery_date_tag = _get_surgery_date(room_video)
+                    surgery_date_tag = get_surgery_date(room_video)
                     pending_surgery_events.extend(new_evts)
                     _process_pending_surgery_events(
                         unified_events_path,
@@ -912,7 +531,7 @@ def main():
                 _process_pending_surgery_events(
                     unified_events_path,
                     pair_report_path,
-                    _get_surgery_date(room_video),
+                    get_surgery_date(room_video),
                     dataset_name,
                 )
 
@@ -928,7 +547,7 @@ def main():
             _process_pending_surgery_events(
                 unified_events_path,
                 pair_report_path,
-                _get_surgery_date(room_video),
+                get_surgery_date(room_video),
                 dataset_name,
                 force=True,
             )
@@ -938,7 +557,7 @@ def main():
             _last_pair_ctx = {
                 "unified_events_path": unified_events_path,
                 "pair_report_path":    pair_report_path,
-                "surgery_date_tag":    _get_surgery_date(room_video),
+                "surgery_date_tag":    get_surgery_date(room_video),
                 "dataset_name":        dataset_name,
             }
             # ↑ end of inner pair for-loop
@@ -965,7 +584,7 @@ def main():
 
     # ── 重新排序所有 Unified Events CSV ──────────────────────────────────
     for path in unified_event_paths:
-        _sort_unified_csv(path)
+        sort_unified_csv(path)
         print(f"  [排序完成] {os.path.basename(path)}")
 
     print("\n\n" + "=" * 70)

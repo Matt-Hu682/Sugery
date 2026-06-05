@@ -186,17 +186,64 @@ pairs = list(zip(door_videos[:pair_count], room_videos[:pair_count]))
 負責：
 
 - 設定 GPU。
-- 收集 Door 與 Room 影片。
-- 依順序配對影片。
-- 依 dataset 分組處理。
-- 同步讀取兩個視角的 frame。
-- 呼叫 Door 開門偵測。
-- 呼叫 Surgery VLM 分析。
-- 呼叫 `RealtimePipeline` 產生手術事件。
-- 用 Door OPEN 狀態過濾 Surgery 事件。
-- 寫出 raw CSV、unified events CSV、正式 result CSV。
-- 觸發事件剪輯。
-- 更新 live monitor 檔案。
+- 建立 Door / Surgery 分析器與 realtime pipeline。
+- 依 dataset 與影片配對執行同步主迴圈。
+- 同步讀取 Door 與 Room frame。
+- 串接 Door 偵測、Surgery VLM、事件輸出、剪輯與 live monitor。
+
+主程式已把低階工具拆出，避免所有邏輯集中在單一檔案。
+
+### `src/pipeline/video_outputs.py`
+
+影片收集與輸出路徑工具。
+
+負責：
+
+- 依攝影機類型收集 Door / Room 影片。
+- 從影片路徑取得 dataset 名稱。
+- 從影片檔名取得 Surgery date。
+- 建立 raw CSV、unified events CSV、result CSV 的輸出路徑。
+
+### `src/pipeline/event_utils.py`
+
+事件時間與 CSV 排序工具。
+
+負責：
+
+- `HH:MM:SS` 與秒數轉換。
+- 跨午夜的秒差計算。
+- unified events CSV 排序。
+- `SEND` 跨日日期標籤修正。
+
+### `src/pipeline/door_state.py`
+
+Door 狀態與 Surgery event matching 工具。
+
+負責：
+
+- Door OpenCV raw result 的 debounce。
+- `ENT` 看事件前 60 秒 Door OPEN。
+- `SEND` 看事件後 60 秒 Door OPEN。
+- 即時 pending event 是否已等到足夠 Door 時間軸。
+
+### `src/pipeline/event_clipper.py`
+
+事件影片剪輯工具。
+
+負責：
+
+- 預先索引 Room 影片的開始時間、fps、duration。
+- 依 result row 的 `Real_Time` 找到對應 Room 影片。
+- 裁剪事件前後各 90 秒的影片片段。
+
+### `src/monitoring/terminal_ui.py`
+
+終端機即時狀態顯示工具。
+
+負責：
+
+- 更新 Door / Surgery 兩行狀態列。
+- 寫出事件 log 並重畫狀態列。
 
 ### `src/config.py`
 
@@ -360,11 +407,9 @@ Door 裁切與 ROI 調整輔助工具。
 
 設定診斷工具，用來確認目前路徑、資料集與設定是否符合預期。
 
-### `src/batch_runner/*` 與 `src/scripts/run_gpu*.py`
+### 舊版 batch runner
 
-舊版多日期、多 GPU 批次流程相關檔案。目前主程式不是這條路線。
-
-若要跑目前同步 Door/Room 的流程，請使用：
+舊版多日期、多 GPU 批次流程已從目前專案移除。若要跑目前同步 Door/Room 的流程，請使用：
 
 ```bash
 PYTHONPATH=src python3 src/main_parallel.py
@@ -589,14 +634,9 @@ git status --short
 
 以下檔案仍在專案中，但目前不是主執行流程：
 
-- `src/batch_runner/processor.py`
-- `src/batch_runner/config.py`
 - `src/main_realtime.py`
-- `src/scripts/run_gpu0.py`
-- `src/scripts/run_gpu1.py`
-- `src/scripts/run_with_tmux.sh`
 
-這些檔案偏向舊版單視角、批次、多 GPU 或 tmux 流程。除非要維護舊流程，否則目前請優先閱讀與使用 `src/main_parallel.py`。
+舊版 `src/batch_runner/` 與 `src/scripts/run_gpu*.py` / `run_with_tmux.sh` 已移除。除非要維護舊流程，否則目前請優先閱讀與使用 `src/main_parallel.py`。
 
 ## 一句話總結
 
