@@ -29,6 +29,8 @@ class VLMRunner:
         self.processor = processor
 
     def run(self, messages, max_new_tokens=10):
+        start_time = time.time()
+
         # ── Thinking Mode ─────────────────────────────────────────────────────
         text = self.processor.apply_chat_template(
             messages,
@@ -60,13 +62,16 @@ class VLMRunner:
                 top_k=VLM_TOP_K,
             )
 
-        start_time = time.time()
         with torch.no_grad():
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
             generated_ids = self.model.generate(**inputs, **generate_kwargs)
-        infer_time = time.time() - start_time
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
         output_text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         output_text = output_text.split("assistant\n")[-1].strip()
+        infer_time = time.time() - start_time
 
         vlm_result_str = parse_response(output_text)
         try:

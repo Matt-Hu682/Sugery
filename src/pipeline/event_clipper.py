@@ -12,7 +12,7 @@ class RoomEventClipper:
     def __init__(self, log_event, pre_post_sec: int = 90):
         self.log_event = log_event
         self.pre_post_sec = pre_post_sec
-        self.room_videos_by_dataset = self._index_room_videos()
+        self.room_videos_by_dataset = {}
 
     def _get_video_abs_ts(self, path):
         try:
@@ -22,9 +22,11 @@ class RoomEventClipper:
         except Exception:
             return None
 
-    def _index_room_videos(self):
+    def _index_room_videos(self, dataset_name: str | None = None):
         by_dataset = {}
         for vpath in sorted(collect_videos("Room")):
+            if dataset_name is not None and get_dataset_name(vpath) != dataset_name:
+                continue
             vts = self._get_video_abs_ts(vpath)
             if vts is None:
                 continue
@@ -43,7 +45,13 @@ class RoomEventClipper:
             videos.sort(key=lambda x: x["ts"])
         return by_dataset
 
+    def _ensure_dataset_index(self, dataset_name: str):
+        if dataset_name in self.room_videos_by_dataset:
+            return
+        self.room_videos_by_dataset.update(self._index_room_videos(dataset_name))
+
     def clip_event(self, row: dict, video_output_dir: str, dataset_name: str):
+        self._ensure_dataset_index(dataset_name)
         dataset_room_videos = self.room_videos_by_dataset.get(dataset_name, [])
         if not dataset_room_videos:
             self.log_event(f"  [剪輯略過] dataset={dataset_name} 找不到 Room 影片")

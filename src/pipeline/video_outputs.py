@@ -2,12 +2,31 @@
 
 import os
 
-from config import CAMERA_SETTING, CSV_OUTPUT, OR_SETTING, ROOM, VIDEO_DIR, VIDEO_DIRS
+from config import (
+    CAMERA_SETTING,
+    CSV_OUTPUT,
+    OR_SETTING,
+    ROOM,
+    TARGET_DATASETS,
+    TEST_VIDEO_BASE,
+    VIDEO_DIR,
+    VIDEO_DIRS,
+)
+
+
+def _current_video_dirs() -> list[str]:
+    if TARGET_DATASETS is None and os.path.isdir(TEST_VIDEO_BASE):
+        return sorted(
+            os.path.join(TEST_VIDEO_BASE, name)
+            for name in os.listdir(TEST_VIDEO_BASE)
+            if os.path.isdir(os.path.join(TEST_VIDEO_BASE, name))
+        )
+    return list(VIDEO_DIRS if VIDEO_DIRS else [VIDEO_DIR])
 
 
 def collect_videos(cam_type: str) -> list[str]:
     cams = [cam for cam in OR_SETTING[ROOM] if CAMERA_SETTING.get(cam) == cam_type]
-    dirs = [os.path.abspath(p) for p in (VIDEO_DIRS if VIDEO_DIRS else [VIDEO_DIR])]
+    dirs = [os.path.abspath(p) for p in _current_video_dirs()]
     videos = []
     for directory in dirs:
         if not os.path.isdir(directory):

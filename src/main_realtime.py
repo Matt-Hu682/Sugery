@@ -182,9 +182,10 @@ def main():
             print(f"\n [{vid_idx}/{len(dataset_video_files)}] [{dataset_name}] {video_name}")
 
             cap = cv2.VideoCapture(video_path)
-            fps = cap.get(cv2.CAP_PROP_FPS)
+            fps = cap.get(cv2.CAP_PROP_FPS) or 5.0
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            stride_frames = int(fps * STRIDE_SEC)
+            stride_frames = max(1, int(fps * STRIDE_SEC))
+            sample_sec = stride_frames / fps if fps else STRIDE_SEC
 
             start_dt = video_start_time(video_path)
             if start_dt is None:
@@ -192,6 +193,7 @@ def main():
 
             frame_idx = 0
             while cap.isOpened():
+                loop_start = time.time()
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame = cap.read()
                 if not ret:
@@ -283,9 +285,12 @@ def main():
                         user_quit = True
                         break
 
+                loop_time = time.time() - loop_start
+                speed = sample_sec / loop_time if loop_time > 0 else 0.0
                 vlm_info = f" vlm={vlm_vote}" if CURRENT_TEST == "Door" and vlm_vote != '' else ""
                 print(f"\r  {video_time_str} | raw={status} voted={voted}{vlm_info} | "
                     f"state={state['confirmed_state_text']} | "
+                    f"infer={infer_time:.2f}s loop={loop_time:.2f}s speed={speed:.2f}x | "
                     f"events={len(state['confirmed_events'])}   ", end="")
 
                 frame_idx += stride_frames

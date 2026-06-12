@@ -11,10 +11,10 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config import OUTPUT_BASE_DIR, ROOM
+from config import LIVE_MONITOR_BASE_DIR, OUTPUT_BASE_DIR, ROOM
 
 OUTPUT_ROOT = Path(OUTPUT_BASE_DIR)
-LIVE_ROOT = OUTPUT_ROOT / "live"
+LIVE_ROOT = Path(LIVE_MONITOR_BASE_DIR) / "live"
 
 app = FastAPI(title="Surgery Live Monitor")
 
@@ -65,7 +65,7 @@ def _run_payload(path: Path) -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return HTMLResponse("""
+    return HTMLResponse(content="""
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -81,7 +81,7 @@ def index():
     .images { display: grid; grid-template-columns: repeat(2, minmax(260px, 1fr)); gap: 14px; align-items: start; }
     figure { margin: 0; background: #111317; border: 1px solid #343941; border-radius: 6px; overflow: hidden; }
     figcaption { padding: 8px 10px; color: #c9d1d9; font-size: 13px; border-bottom: 1px solid #343941; }
-    img { width: 100%; display: block; background: #08090b; }
+    img { width: auto; max-width: 100%; height: auto; display: block; margin: 0 auto; background: #08090b; }
     aside { background: #111317; border: 1px solid #343941; border-radius: 6px; padding: 12px; }
     .state { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .metric { padding: 8px; border: 1px solid #30363d; border-radius: 5px; background: #181b20; }
@@ -115,7 +115,7 @@ def index():
         <div class="metric"><b>Door</b><span id="doorOpen">-</span></div>
         <div class="metric"><b>Surgery Date</b><span id="surgeryDate">-</span></div>
         <div class="metric"><b>Score</b><span id="score">-</span></div>
-        <div class="metric"><b>Ratio</b><span id="ratio">-</span></div>
+        <div class="metric"><b>Infer Time</b><span id="inferTime">-</span></div>
         <div class="metric"><b>AI Status</b><span id="aiStatus">-</span></div>
         <div class="metric"><b>Voted</b><span id="voted">-</span></div>
         <div class="metric"><b>Real Time</b><span id="realTime">-</span></div>
@@ -167,7 +167,7 @@ async function tick() {
     setText('doorOpen', data.door_open ? 'OPEN' : 'CLOSE', data.door_open);
     setText('surgeryDate', data.surgery_date ?? '-');
     setText('score', data.door_score ?? '-');
-    setText('ratio', data.door_ratio ?? '-');
+    setText('inferTime', formatInferTime(data.infer_time));
     setText('aiStatus', data.status ?? '-');
     setText('voted', data.voted_status ?? '-');
     setText('realTime', data.real_time ?? '-');
@@ -181,6 +181,10 @@ function setText(id, value, state) {
   const el = document.getElementById(id);
   el.textContent = value;
   el.className = state === true ? 'ok' : state === false ? 'bad' : '';
+}
+function formatInferTime(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) ? seconds.toFixed(3) + ' s' : '-';
 }
 function renderEvents(events) {
   const body = document.getElementById('eventsBody');
@@ -212,7 +216,7 @@ tick();
 </script>
 </body>
 </html>
-""")
+""", headers={"Cache-Control": "no-store, max-age=0"})
 
 
 @app.get("/api/runs")

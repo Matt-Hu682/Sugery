@@ -41,7 +41,7 @@ class LiveMonitorWriter:
             return
         path = self.live_dir / filename
         tmp_path = self.live_dir / f".{filename}.tmp.jpg"
-        cv2.imwrite(str(tmp_path), image)
+        cv2.imwrite(str(tmp_path), image, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
         os.replace(tmp_path, path)
 
     def _write_json(self, filename: str, payload: dict):

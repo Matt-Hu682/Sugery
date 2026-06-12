@@ -7,13 +7,19 @@ OUTPUT_BASE_DIR = os.environ.get(
     "SURGERY_OUTPUT_BASE_DIR",
     "/home/cvlabgodzilla/Desktop/908_nas_2/113-Student/F113151105/手術室/Sugery/test-result",
 )
+# 即時監控頻繁覆寫圖片/JSON，預設放本機避免 NAS I/O 尖峰。
+LIVE_MONITOR_BASE_DIR = os.environ.get(
+    "SURGERY_LIVE_MONITOR_BASE_DIR",
+    os.path.join(BASE_DIR, "live"),
+)
 TEST_VIDEO_BASE = os.environ.get(
     "SURGERY_TEST_VIDEO_BASE",
-    "/home/cvlabgodzilla/Desktop/908_nas_2/113-Student/F113151105/手術室/data_video/mask_video_202401",
+    #"/home/cvlabgodzilla/Desktop/908_nas_2/113-Student/F113151105/手術室/data_video/mask_video_202311",
+    "/home/cvlabgodzilla/Desktop/Sugery/data/mask_video_202408"
 )
 # 指定資料集資料夾名稱；設為 None 時跑 TEST_VIDEO_BASE 下全部資料集
 # 可填單一字串: "20231228"，或多個: ["20231228", "20231226"]
-TARGET_DATASETS = None
+TARGET_DATASETS = ["20240803", "20240804", "20240805", "20240806", "20240807", "20240808", "20240813", "20240812"]
 
 if TARGET_DATASETS is None:
     VIDEO_DIRS = sorted([
@@ -82,9 +88,9 @@ DOOR_STAGE1_ROI_WEIGHTS = {
     # A8：三段 ROI（上/中/下），其中中間固定為 x=0~170, y=50~100（裁切圖座標）。
     # 裁切後畫面尺寸約 280x260px (x:400~680, y:0~260)
     "A8": [
-        (0.058, 0.573, 0.479, 0.877, 0.5),  # x=14~115, y=149~228
-        (0.254, 0.319, 0.688, 0.550, 2.0),  # x=61~165, y=83~143
-        (0.087, 0.058, 0.487, 0.308, 3.0),  # x=21~117, y=15~80
+        (0.183, 0.096, 0.567, 0.346, 4.0),  # x=44~136, y=25~90
+        (0.204, 0.365, 0.646, 0.588, 2.0),  # x=49~155, y=95~153
+        (0.188, 0.642, 0.662, 0.873, 0.5),  # x=45~159, y=167~227
     ],
     "A9": [
         (0.00, 0.00, 1.00, 1.00, 1.0),
