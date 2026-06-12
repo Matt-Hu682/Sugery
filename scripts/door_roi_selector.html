@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Door ROI Selector</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: #202124; color: #f1f3f4; }
+    main { display: grid; grid-template-columns: minmax(260px, auto) 360px; gap: 18px; padding: 18px; align-items: start; }
+    canvas { background: #111; image-rendering: pixelated; max-width: 100%; border: 1px solid #5f6368; }
+    aside { display: grid; gap: 12px; }
+    label { display: grid; gap: 5px; color: #dfe3e7; font-size: 14px; }
+    input, button, textarea { font: inherit; }
+    input, textarea { background: #111; color: #f1f3f4; border: 1px solid #5f6368; border-radius: 4px; padding: 8px; }
+    button { border: 1px solid #8ab4f8; background: #263850; color: #e8f0fe; border-radius: 4px; padding: 8px 10px; cursor: pointer; }
+    button:hover { background: #304766; }
+    .row { display: flex; gap: 8px; align-items: end; }
+    .row > * { flex: 1; }
+    textarea { min-height: 210px; resize: vertical; white-space: pre; }
+    .hint { color: #bdc1c6; font-size: 13px; line-height: 1.45; }
+    .roi-list { font-size: 13px; color: #dfe3e7; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+<main>
+  <section>
+    <canvas id="canvas"></canvas>
+  </section>
+  <aside>
+    <label>Image path
+      <input id="imagePath" value="../templates/door_closed_A8.jpg" />
+    </label>
+    <div class="row">
+      <label>Next weight
+        <input id="weight" type="number" value="1" min="0" step="0.5" />
+      </label>
+      <button id="loadBtn">Load</button>
+    </div>
+    <div class="row">
+      <button id="undoBtn">Undo</button>
+      <button id="clearBtn">Clear</button>
+    </div>
+    <p class="hint">滑鼠拖拉框 ROI。座標會以目前圖片尺寸換算成 config.py 需要的相對比例：(x1r, y1r, x2r, y2r, weight)。</p>
+    <div id="roiList" class="roi-list"></div>
+    <label>config.py output
+      <textarea id="output" readonly></textarea>
+    </label>
+  </aside>
+</main>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const imagePath = document.getElementById('imagePath');
+const weightInput = document.getElementById('weight');
+const output = document.getElementById('output');
+const roiList = document.getElementById('roiList');
+const img = new Image();
+let rois = [];
+let dragging = false;
+let start = null;
+let current = null;
+
+function loadImage() {
+  img.onload = () => {
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    rois = [];
+    redraw();
+  };
+  img.onerror = () => alert('Cannot load image: ' + imagePath.value);
+  img.src = imagePath.value + '?t=' + Date.now();
+}
+
+function normalizeRect(a, b) {
+  return {
+    x1: Math.min(a.x, b.x), y1: Math.min(a.y, b.y),
+    x2: Math.max(a.x, b.x), y2: Math.max(a.y, b.y),
+  };
+}
+
+function pos(evt) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: Math.round((evt.clientX - r.left) * canvas.width / r.width),
+    y: Math.round((evt.clientY - r.top) * canvas.height / r.height),
+  };
+}
+
+function redraw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (img.complete) ctx.drawImage(img, 0, 0);
+  rois.forEach((r, i) => drawRect(r, i));
+  if (dragging && start && current) drawRect({...normalizeRect(start, current), weight: Number(weightInput.value) || 1}, rois.length, true);
+  updateOutput();
+}
+
+function drawRect(r, i, draft=false) {
+  const colors = ['#ff4040', '#40a0ff', '#00dd70', '#ffc040', '#d060ff'];
+  ctx.save();
+  ctx.strokeStyle = draft ? '#ffffff' : colors[i % colors.length];
+  ctx.fillStyle = draft ? 'rgba(255,255,255,.15)' : hexToRgba(colors[i % colors.length], .22);
+  ctx.lineWidth = draft ? 1 : 2;
+  ctx.fillRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
+  ctx.strokeRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
+  ctx.fillStyle = ctx.strokeStyle;
+  ctx.font = '12px sans-serif';
+  ctx.fillText(`ROI ${i + 1} w=${r.weight}`, r.x1 + 4, Math.max(14, r.y1 + 14));
+  ctx.restore();
+}
+
+function hexToRgba(hex, alpha) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function updateOutput() {
+  const lines = ['    "A8": ['];
+  const list = [];
+  rois.forEach((r, i) => {
+    lines.push(`        (${(r.x1 / canvas.width).toFixed(3)}, ${(r.y1 / canvas.height).toFixed(3)}, ${(r.x2 / canvas.width).toFixed(3)}, ${(r.y2 / canvas.height).toFixed(3)}, ${Number(r.weight).toFixed(1)}),  # x=${r.x1}~${r.x2}, y=${r.y1}~${r.y2}`);
+    list.push(`ROI ${i + 1}: x=${r.x1}~${r.x2}, y=${r.y1}~${r.y2}, weight=${r.weight}`);
+  });
+  lines.push('    ],');
+  output.value = lines.join('\n');
+  roiList.textContent = list.join('\n');
+}
+
+canvas.addEventListener('mousedown', e => { dragging = true; start = pos(e); current = start; redraw(); });
+canvas.addEventListener('mousemove', e => { if (!dragging) return; current = pos(e); redraw(); });
+canvas.addEventListener('mouseup', e => {
+  if (!dragging) return;
+  current = pos(e);
+  const r = normalizeRect(start, current);
+  if (r.x2 - r.x1 >= 3 && r.y2 - r.y1 >= 3) rois.push({...r, weight: Number(weightInput.value) || 1});
+  dragging = false; start = null; current = null; redraw();
+});
+
+document.getElementById('loadBtn').onclick = loadImage;
+document.getElementById('undoBtn').onclick = () => { rois.pop(); redraw(); };
+document.getElementById('clearBtn').onclick = () => { rois = []; redraw(); };
+loadImage();
+</script>
+</body>
+</html>

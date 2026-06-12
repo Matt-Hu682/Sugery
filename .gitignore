@@ -16,12 +16,16 @@ result/
 # Cache & Temp
 .cache/
 temp/
+*.tar
 
 # VSCode
 .vscode/
 
 # OS
 .DS_Store
-
+*.png
 # Old Backup / Tests
 SugerSystem_AI_v1/
+
+# 測試用的code 
+src/test
